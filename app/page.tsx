@@ -54,20 +54,42 @@ function getToday() {
   return `${year}-${month}-${day}`;
 }
 
+/**
+ * 06:00 ~ 익일 05:30 기준 시간 목록
+ * 06:00, 06:30, ... 23:30, 00:00, ... 05:30
+ */
 const timeOptions = Array.from({ length: 48 }, (_, i) => {
-  const h = String(Math.floor(i / 2)).padStart(2, "0");
-  const m = i % 2 === 0 ? "00" : "30";
+  const total = i + 12;
+  const h = String(Math.floor(total / 2) % 24).padStart(2, "0");
+  const m = total % 2 === 0 ? "00" : "30";
   return `${h}:${m}`;
 });
 
+/**
+ * 시간 문자열을 06:00 시작 슬롯으로 변환
+ * 06:00 -> 0
+ * 23:30 -> 35
+ * 00:00 -> 36
+ * 05:30 -> 47
+ */
 function timeToSlot(time: string) {
   const [hour, minute] = time.split(":").map(Number);
-  return hour * 2 + (minute === 30 ? 1 : 0);
+  let slot = hour * 2 + (minute === 30 ? 1 : 0);
+
+  if (slot < 12) {
+    slot += 48;
+  }
+
+  return slot - 12;
 }
 
+/**
+ * 슬롯을 다시 시간 문자열로 변환
+ */
 function slotToTime(slot: number) {
-  const h = String(Math.floor(slot / 2)).padStart(2, "0");
-  const m = slot % 2 === 0 ? "00" : "30";
+  const real = (slot + 12) % 48;
+  const h = String(Math.floor(real / 2)).padStart(2, "0");
+  const m = real % 2 === 0 ? "00" : "30";
   return `${h}:${m}`;
 }
 
@@ -80,6 +102,9 @@ function overlaps(aStart: string, aEnd: string, bStart: string, bEnd: string) {
   return aS < bE && aE > bS;
 }
 
+/**
+ * 같은 탁 안에서 겹치는 시간대는 최대 5개 lane에 배치
+ */
 function assignLanes(entries: Entry[]): TimelineEntry[] {
   const sorted = [...entries].sort((a, b) => {
     const diff = timeToSlot(a.start) - timeToSlot(b.start);
@@ -291,7 +316,13 @@ export default function Page() {
   const myEntries = useMemo(() => {
     return entries
       .filter((item) => item.nickname === currentUser)
-      .sort((a, b) => `${a.date}${a.start}`.localeCompare(`${b.date}${b.start}`));
+      .sort((a, b) => {
+        const diff = timeToSlot(a.start) - timeToSlot(b.start);
+        if (a.date !== b.date) {
+          return a.date.localeCompare(b.date);
+        }
+        return diff;
+      });
   }, [entries, currentUser]);
 
   function resetForm() {
@@ -432,7 +463,7 @@ export default function Page() {
       <div className="mx-auto flex min-h-screen w-full max-w-md flex-col bg-white shadow-xl">
         <header className="bg-blue-600 px-4 pb-5 pt-6 text-white">
           <h1 className="text-xl font-bold">익쏘 마작 시간 조율 시스템</h1>
-          <p className="mt-1 text-sm text-blue-100">모바일 전용 · 1탁 / 2탁</p>
+          <p className="mt-1 text-sm text-blue-100">모바일 전용 · 1탁 / 2탁 · 06:00 기준</p>
         </header>
 
         <div className="border-b bg-white px-3 py-3">
@@ -475,7 +506,7 @@ export default function Page() {
             <div className="space-y-3 p-3">
               <div className="rounded-3xl border bg-slate-50 p-4">
                 <h2 className="text-base font-semibold text-slate-800">날짜 요약</h2>
-                <p className="mt-1 text-sm text-slate-500">{selectedDate}</p>
+                <p className="mt-1 text-sm text-slate-500">{selectedDate} 06:00 ~ 익일 05:30</p>
 
                 <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                   <div className="rounded-2xl bg-white px-3 py-3 text-slate-700">
@@ -503,7 +534,10 @@ export default function Page() {
                     </div>
                   ) : (
                     overlapSummary.map((item, idx) => (
-                      <div key={idx} className="rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-800">
+                      <div
+                        key={idx}
+                        className="rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-800"
+                      >
                         {item.start} ~ {item.end} · 최대 {item.count}명 가능
                       </div>
                     ))
@@ -558,7 +592,10 @@ export default function Page() {
                     const columnEntries = timelineByTable[column];
 
                     return (
-                      <div key={column} className="relative h-[960px] overflow-hidden rounded-2xl bg-slate-50">
+                      <div
+                        key={column}
+                        className="relative h-[960px] overflow-hidden rounded-2xl bg-slate-50"
+                      >
                         {timeOptions.map((_, i) => (
                           <div
                             key={i}
@@ -574,10 +611,10 @@ export default function Page() {
                           return (
                             <div
                               key={entry.id}
-                              className="absolute rounded-2xl bg-green-500 px-1 py-2 text-center text-[10px] font-semibold text-white shadow"
+                              className="absolute rounded-xl bg-green-500 py-2 text-center text-[11px] font-semibold text-white shadow"
                               style={{
-                                left: `${4 + entry.lane * 16}px`,
-                                width: "14px",
+                                left: `calc(${entry.lane} * 20% + 2px)`,
+                                width: "calc(20% - 4px)",
                                 top: `${start * 20}px`,
                                 height: `${(end - start) * 20}px`,
                               }}
@@ -601,7 +638,9 @@ export default function Page() {
             <div className="p-3">
               <div className="rounded-3xl border bg-slate-50 p-4">
                 <h2 className="text-lg font-semibold text-slate-800">가능 시간 입력</h2>
-                <p className="mt-1 text-sm text-slate-500">원하는 날짜와 시간을 입력하세요.</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  원하는 날짜와 시간을 입력하세요. 하루 기준은 06:00 ~ 익일 05:30입니다.
+                </p>
 
                 <form onSubmit={saveEntry} className="mt-4 space-y-4">
                   <div>
