@@ -4,15 +4,9 @@ import { useEffect, useState } from "react";
 
 const API_URL = "/api/mahjong";
 
-type Member = {
-  nickname: string;
-  name: string;
-};
-
 type Schedule = {
   id: string;
   nickname: string;
-  date: string;
   start: string;
   end: string;
   table: string;
@@ -21,137 +15,150 @@ type Schedule = {
 type Block = {
   id: string;
   title: string;
-  date: string;
   start: string;
   end: string;
   scope: string;
-  type: string;
 };
 
 export default function Page() {
+  const [date, setDate] = useState("2026-04-11");
   const [message, setMessage] = useState("");
-  const [members, setMembers] = useState<Member[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [blocks, setBlocks] = useState<Block[]>([]);
-  const [date, setDate] = useState("2026-04-11");
 
-  // ✅ 공통 응답 처리
+  const START = 6; // 06:00 시작
+  const HOURS = 24;
+
   const handleResponse = (res: any, onSuccess: (data: any) => void) => {
     if (!res.success) {
-      setMessage(res.message || "오류 발생");
+      setMessage(res.message || "오류");
       return;
     }
-
-    // 성공하면 메시지 제거
     setMessage("");
     onSuccess(res);
   };
 
-  // 🔹 회원
-  const loadMembers = async () => {
-    const res = await fetch(`${API_URL}?action=members`);
-    const data = await res.json();
-
-    handleResponse(data, (res) => {
-      setMembers(res.members || []);
-    });
-  };
-
-  // 🔹 일정
   const loadSchedules = async () => {
-    const res = await fetch(
-      `${API_URL}?action=schedules&date=${date}`
-    );
+    const res = await fetch(`${API_URL}?action=schedules&date=${date}`);
     const data = await res.json();
-
-    handleResponse(data, (res) => {
-      setSchedules(res.schedules || []);
-    });
+    handleResponse(data, (res) => setSchedules(res.schedules || []));
   };
 
-  // 🔥 블록
   const loadBlocks = async () => {
-    const res = await fetch(
-      `${API_URL}?action=blocks&date=${date}`
-    );
+    const res = await fetch(`${API_URL}?action=blocks&date=${date}`);
     const data = await res.json();
-
-    handleResponse(data, (res) => {
-      setBlocks(res.blocks || []);
-    });
+    handleResponse(data, (res) => setBlocks(res.blocks || []));
   };
 
-  // 🔄 초기 로딩 + 날짜 변경
   useEffect(() => {
-    loadMembers();
     loadSchedules();
     loadBlocks();
   }, [date]);
 
-  return (
-    <div style={{ padding: 20, maxWidth: 800, margin: "0 auto" }}>
-      <h1 style={{ fontSize: 24, fontWeight: "bold", marginBottom: 10 }}>
-        익쏘 마작 시간 조율 시스템
-      </h1>
+  // 시간 → 숫자 변환
+  const timeToPos = (t: string) => {
+    const [h, m] = t.split(":").map(Number);
+    let hour = h;
+    if (hour < START) hour += 24;
+    return hour + m / 60;
+  };
 
-      {/* ✅ 메시지 */}
-      {message && (
+  const renderBars = () => {
+    const items: any[] = [];
+
+    schedules.forEach((s) => {
+      items.push({
+        ...s,
+        type: "schedule",
+        color: s.table === "1탁" ? "#2e7d32" : "#1565c0",
+      });
+    });
+
+    blocks.forEach((b) => {
+      items.push({
+        ...b,
+        type: "block",
+        color: "#6a1b9a",
+      });
+    });
+
+    return items.map((item, idx) => {
+      const start = timeToPos(item.start);
+      const end = timeToPos(item.end);
+
+      const left = ((start - START) / HOURS) * 100;
+      const width = ((end - start) / HOURS) * 100;
+
+      return (
         <div
+          key={idx}
           style={{
-            background: "#e8f5e9",
-            color: "#2e7d32",
-            padding: "12px 16px",
-            borderRadius: "10px",
-            marginBottom: "20px",
+            position: "absolute",
+            left: `${left}%`,
+            width: `${width}%`,
+            top: `${idx * 28}px`,
+            height: 24,
+            borderRadius: 8,
+            background: item.color,
+            color: "white",
+            fontSize: 12,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
           }}
         >
-          {message}
+          {item.type === "schedule"
+            ? item.nickname
+            : `🚧 ${item.title}`}
         </div>
+      );
+    });
+  };
+
+  const renderTimeLabels = () => {
+    const labels = [];
+    for (let i = 0; i <= 24; i++) {
+      const h = (START + i) % 24;
+      labels.push(
+        <div key={i} style={{ flex: 1, fontSize: 10, textAlign: "center" }}>
+          {h.toString().padStart(2, "0")}
+        </div>
+      );
+    }
+    return labels;
+  };
+
+  return (
+    <div style={{ padding: 16 }}>
+      <h2>익쏘 마작 타임라인</h2>
+
+      {message && (
+        <div style={{ color: "red", marginBottom: 10 }}>{message}</div>
       )}
 
-      {/* 날짜 선택 */}
-      <div style={{ marginBottom: 20 }}>
-        <label>날짜 선택: </label>
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-        />
+      <input
+        type="date"
+        value={date}
+        onChange={(e) => setDate(e.target.value)}
+      />
+
+      {/* 타임라인 */}
+      <div style={{ marginTop: 20 }}>
+        <div style={{ display: "flex" }}>{renderTimeLabels()}</div>
+
+        <div
+          style={{
+            position: "relative",
+            height: 200,
+            border: "1px solid #ddd",
+            marginTop: 5,
+          }}
+        >
+          {renderBars()}
+        </div>
       </div>
-
-      <hr />
-
-      {/* 회원 */}
-      <h2>👥 회원 ({members.length})</h2>
-      <ul>
-        {members.map((m, i) => (
-          <li key={i}>{m.nickname}</li>
-        ))}
-      </ul>
-
-      <hr />
-
-      {/* 일정 */}
-      <h2>📅 일정 ({schedules.length})</h2>
-      <ul>
-        {schedules.map((s) => (
-          <li key={s.id}>
-            {s.nickname} / {s.start} ~ {s.end} / {s.table}
-          </li>
-        ))}
-      </ul>
-
-      <hr />
-
-      {/* 블록 */}
-      <h2>🚧 운영 블록 ({blocks.length})</h2>
-      <ul>
-        {blocks.map((b) => (
-          <li key={b.id}>
-            {b.title} / {b.start} ~ {b.end} / {b.scope}
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }
