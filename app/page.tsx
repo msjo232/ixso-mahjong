@@ -42,6 +42,10 @@ type SaveResponse = {
   message?: string;
 };
 
+type TimelineEntry = Entry & {
+  lane: number;
+};
+
 function getToday() {
   const now = new Date();
   const year = now.getFullYear();
@@ -65,6 +69,45 @@ function slotToTime(slot: number) {
   const h = String(Math.floor(slot / 2)).padStart(2, "0");
   const m = slot % 2 === 0 ? "00" : "30";
   return `${h}:${m}`;
+}
+
+function overlaps(aStart: string, aEnd: string, bStart: string, bEnd: string) {
+  const aS = timeToSlot(aStart);
+  const aE = timeToSlot(aEnd);
+  const bS = timeToSlot(bStart);
+  const bE = timeToSlot(bEnd);
+
+  return aS < bE && aE > bS;
+}
+
+function assignLanes(entries: Entry[]): TimelineEntry[] {
+  const sorted = [...entries].sort((a, b) => {
+    const diff = timeToSlot(a.start) - timeToSlot(b.start);
+    if (diff !== 0) return diff;
+    return timeToSlot(a.end) - timeToSlot(b.end);
+  });
+
+  const laneEndSlots = [-1, -1, -1, -1, -1];
+
+  return sorted.map((entry) => {
+    const startSlot = timeToSlot(entry.start);
+    const endSlot = timeToSlot(entry.end);
+
+    let assignedLane = 0;
+
+    for (let i = 0; i < 5; i += 1) {
+      if (startSlot >= laneEndSlots[i]) {
+        assignedLane = i;
+        laneEndSlots[i] = endSlot;
+        break;
+      }
+    }
+
+    return {
+      ...entry,
+      lane: assignedLane,
+    };
+  });
 }
 
 export default function Page() {
@@ -213,6 +256,38 @@ export default function Page() {
     return result;
   }, [dayEntries]);
 
+  const tableWarnings = useMemo(() => {
+    return (["1탁", "2탁"] as TableType[]).map((table) => {
+      const tableEntries = dayEntries.filter((entry) => entry.table === table);
+      let maxOverlap = 0;
+
+      for (let slot = 0; slot < 48; slot += 1) {
+        const count = tableEntries.filter((entry) => {
+          const start = timeToSlot(entry.start);
+          const end = timeToSlot(entry.end);
+          return slot >= start && slot < end;
+        }).length;
+
+        if (count > maxOverlap) {
+          maxOverlap = count;
+        }
+      }
+
+      return {
+        table,
+        maxOverlap,
+        full: maxOverlap >= 5,
+      };
+    });
+  }, [dayEntries]);
+
+  const timelineByTable = useMemo(() => {
+    return {
+      "1탁": assignLanes(dayEntries.filter((entry) => entry.table === "1탁")),
+      "2탁": assignLanes(dayEntries.filter((entry) => entry.table === "2탁")),
+    };
+  }, [dayEntries]);
+
   const myEntries = useMemo(() => {
     return entries
       .filter((item) => item.nickname === currentUser)
@@ -236,6 +311,19 @@ export default function Page() {
 
     if (timeToSlot(form.start) >= timeToSlot(form.end)) {
       setMessage("종료시간은 시작시간보다 뒤여야 합니다.");
+      return;
+    }
+
+    const overlappingCount = entries.filter((item) => {
+      if (item.table !== form.table) return false;
+      if (item.date !== form.date) return false;
+      if (editingId && item.id === editingId) return false;
+
+      return overlaps(item.start, item.end, form.start, form.end);
+    }).length;
+
+    if (overlappingCount >= 5) {
+      setMessage(`${form.table}은 해당 시간대에 이미 최대 5명입니다. 탁이 다 찼습니다.`);
       return;
     }
 
@@ -421,12 +509,32 @@ export default function Page() {
                     ))
                   )}
                 </div>
+
+                <div className="mt-3 space-y-2">
+                  {tableWarnings.map((item) =>
+                    item.full ? (
+                      <div
+                        key={item.table}
+                        className="rounded-2xl bg-rose-50 px-3 py-3 text-sm text-rose-700"
+                      >
+                        {item.table}은 현재 일부 시간대가 최대 5명으로 가득 찼습니다.
+                      </div>
+                    ) : (
+                      <div
+                        key={item.table}
+                        className="rounded-2xl bg-white px-3 py-3 text-sm text-slate-500"
+                      >
+                        {item.table} 최대 겹침 인원: {item.maxOverlap}명
+                      </div>
+                    )
+                  )}
+                </div>
               </div>
 
               <div className="rounded-3xl border bg-white p-3">
                 <div className="mb-3 flex items-center justify-between">
                   <h2 className="text-base font-semibold text-slate-800">타임라인</h2>
-                  <span className="text-xs text-slate-400">모바일 세로형</span>
+                  <span className="text-xs text-slate-400">한 탁 최대 5명</span>
                 </div>
 
                 <div className="grid grid-cols-[50px_repeat(2,minmax(0,1fr))] gap-2">
@@ -447,7 +555,7 @@ export default function Page() {
                   </div>
 
                   {(["1탁", "2탁"] as const).map((column) => {
-                    const columnEntries = dayEntries.filter((entry) => entry.table === column);
+                    const columnEntries = timelineByTable[column];
 
                     return (
                       <div key={column} className="relative h-[960px] overflow-hidden rounded-2xl bg-slate-50">
@@ -459,7 +567,7 @@ export default function Page() {
                           />
                         ))}
 
-                        {columnEntries.map((entry, idx) => {
+                        {columnEntries.map((entry) => {
                           const start = timeToSlot(entry.start);
                           const end = timeToSlot(entry.end);
 
@@ -468,11 +576,12 @@ export default function Page() {
                               key={entry.id}
                               className="absolute rounded-2xl bg-green-500 px-1 py-2 text-center text-[10px] font-semibold text-white shadow"
                               style={{
-                                left: `${6 + (idx % 2) * 28}px`,
-                                width: "24px",
+                                left: `${4 + entry.lane * 16}px`,
+                                width: "14px",
                                 top: `${start * 20}px`,
                                 height: `${(end - start) * 20}px`,
                               }}
+                              title={`${entry.nickname} ${entry.start}-${entry.end}`}
                             >
                               <div className="flex h-full items-center justify-center [writing-mode:vertical-rl] [text-orientation:mixed]">
                                 {entry.nickname}
@@ -575,6 +684,10 @@ export default function Page() {
                       placeholder="예: 10분 정도 늦을 수 있음"
                       className="w-full rounded-2xl border px-4 py-3 text-sm"
                     />
+                  </div>
+
+                  <div className="rounded-2xl bg-slate-100 px-3 py-3 text-xs text-slate-600">
+                    같은 시간대에는 한 탁당 최대 5명까지 입력할 수 있습니다.
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
