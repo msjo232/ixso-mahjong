@@ -55,8 +55,7 @@ function getToday() {
 }
 
 /**
- * 06:00 ~ 익일 05:30 기준 시간 목록
- * 06:00, 06:30, ... 23:30, 00:00, ... 05:30
+ * 06:00 ~ 익일 05:30
  */
 const timeOptions = Array.from({ length: 48 }, (_, i) => {
   const total = i + 12;
@@ -65,13 +64,6 @@ const timeOptions = Array.from({ length: 48 }, (_, i) => {
   return `${h}:${m}`;
 });
 
-/**
- * 시간 문자열을 06:00 시작 슬롯으로 변환
- * 06:00 -> 0
- * 23:30 -> 35
- * 00:00 -> 36
- * 05:30 -> 47
- */
 function timeToSlot(time: string) {
   const [hour, minute] = time.split(":").map(Number);
   let slot = hour * 2 + (minute === 30 ? 1 : 0);
@@ -83,9 +75,6 @@ function timeToSlot(time: string) {
   return slot - 12;
 }
 
-/**
- * 슬롯을 다시 시간 문자열로 변환
- */
 function slotToTime(slot: number) {
   const real = (slot + 12) % 48;
   const h = String(Math.floor(real / 2)).padStart(2, "0");
@@ -102,9 +91,6 @@ function overlaps(aStart: string, aEnd: string, bStart: string, bEnd: string) {
   return aS < bE && aE > bS;
 }
 
-/**
- * 같은 탁 안에서 겹치는 시간대는 최대 5개 lane에 배치
- */
 function assignLanes(entries: Entry[]): TimelineEntry[] {
   const sorted = [...entries].sort((a, b) => {
     const diff = timeToSlot(a.start) - timeToSlot(b.start);
@@ -281,6 +267,40 @@ export default function Page() {
     return result;
   }, [dayEntries]);
 
+  const highlightRanges = useMemo(() => {
+    const counts = Array.from({ length: 48 }, (_, slot) => ({ slot, count: 0 }));
+
+    dayEntries.forEach((entry) => {
+      const start = timeToSlot(entry.start);
+      const end = timeToSlot(entry.end);
+      for (let s = start; s < end; s += 1) {
+        counts[s].count += 1;
+      }
+    });
+
+    const result: Array<{ startSlot: number; endSlot: number }> = [];
+    let rangeStart: number | null = null;
+
+    for (let i = 0; i < counts.length; i += 1) {
+      const active = counts[i].count >= 4;
+
+      if (active && rangeStart === null) {
+        rangeStart = i;
+      }
+
+      if ((!active || i === counts.length - 1) && rangeStart !== null) {
+        const endSlot = active && i === counts.length - 1 ? i + 1 : i;
+        result.push({
+          startSlot: rangeStart,
+          endSlot,
+        });
+        rangeStart = null;
+      }
+    }
+
+    return result;
+  }, [dayEntries]);
+
   const tableWarnings = useMemo(() => {
     return (["1탁", "2탁"] as TableType[]).map((table) => {
       const tableEntries = dayEntries.filter((entry) => entry.table === table);
@@ -317,11 +337,8 @@ export default function Page() {
     return entries
       .filter((item) => item.nickname === currentUser)
       .sort((a, b) => {
-        const diff = timeToSlot(a.start) - timeToSlot(b.start);
-        if (a.date !== b.date) {
-          return a.date.localeCompare(b.date);
-        }
-        return diff;
+        if (a.date !== b.date) return a.date.localeCompare(b.date);
+        return timeToSlot(a.start) - timeToSlot(b.start);
       });
   }, [entries, currentUser]);
 
@@ -568,13 +585,13 @@ export default function Page() {
               <div className="rounded-3xl border bg-white p-3">
                 <div className="mb-3 flex items-center justify-between">
                   <h2 className="text-base font-semibold text-slate-800">타임라인</h2>
-                  <span className="text-xs text-slate-400">한 탁 최대 5명</span>
+                  <span className="text-xs text-slate-400">고급 색상 · 하이라이트 포함</span>
                 </div>
 
                 <div className="grid grid-cols-[50px_repeat(2,minmax(0,1fr))] gap-2">
                   <div />
-                  <div className="text-center text-xs font-semibold text-slate-600">1탁</div>
-                  <div className="text-center text-xs font-semibold text-slate-600">2탁</div>
+                  <div className="text-center text-xs font-semibold text-emerald-700">1탁</div>
+                  <div className="text-center text-xs font-semibold text-indigo-700">2탁</div>
 
                   <div className="relative h-[960px]">
                     {timeOptions.map((time, i) => (
@@ -590,12 +607,27 @@ export default function Page() {
 
                   {(["1탁", "2탁"] as const).map((column) => {
                     const columnEntries = timelineByTable[column];
+                    const barColor =
+                      column === "1탁"
+                        ? "bg-emerald-500"
+                        : "bg-indigo-500";
 
                     return (
                       <div
                         key={column}
                         className="relative h-[960px] overflow-hidden rounded-2xl bg-slate-50"
                       >
+                        {highlightRanges.map((range, idx) => (
+                          <div
+                            key={`highlight-${idx}`}
+                            className="absolute left-0 right-0 bg-amber-100/70"
+                            style={{
+                              top: `${range.startSlot * 20}px`,
+                              height: `${(range.endSlot - range.startSlot) * 20}px`,
+                            }}
+                          />
+                        ))}
+
                         {timeOptions.map((_, i) => (
                           <div
                             key={i}
@@ -611,7 +643,7 @@ export default function Page() {
                           return (
                             <div
                               key={entry.id}
-                              className="absolute rounded-xl bg-green-500 py-2 text-center text-[11px] font-semibold text-white shadow"
+                              className={`absolute rounded-xl ${barColor} py-2 text-center text-[11px] font-semibold text-white shadow`}
                               style={{
                                 left: `calc(${entry.lane} * 20% + 2px)`,
                                 width: "calc(20% - 4px)",
@@ -620,8 +652,10 @@ export default function Page() {
                               }}
                               title={`${entry.nickname} ${entry.start}-${entry.end}`}
                             >
-                              <div className="flex h-full items-center justify-center [writing-mode:vertical-rl] [text-orientation:mixed]">
-                                {entry.nickname}
+                              <div className="absolute inset-0 flex items-center justify-center">
+                                <span className="-rotate-90 whitespace-nowrap leading-none">
+                                  {entry.nickname}
+                                </span>
                               </div>
                             </div>
                           );
