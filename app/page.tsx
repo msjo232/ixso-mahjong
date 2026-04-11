@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 type TabType = "timeline" | "input" | "my";
 type TableType = "1탁" | "2탁";
+type MessageType = "success" | "warning" | "error";
 
 type Member = {
   nickname: string;
@@ -44,15 +45,6 @@ type SaveResponse = {
 
 type TimelineEntry = Entry & {
   lane: number;
-};
-
-type ConfirmCandidate = {
-  table: TableType;
-  startSlot: number;
-  endSlot: number;
-  start: string;
-  end: string;
-  names: string[];
 };
 
 function getToday() {
@@ -179,6 +171,10 @@ function assignLanes(entries: Entry[]): TimelineEntry[] {
   });
 }
 
+function isSlotInRange(slot: number, startSlot: number, endSlot: number) {
+  return slot >= startSlot && slot <= endSlot;
+}
+
 export default function Page() {
   const [tab, setTab] = useState<TabType>("timeline");
   const [selectedDate, setSelectedDate] = useState(getToday());
@@ -186,7 +182,10 @@ export default function Page() {
   const [members, setMembers] = useState<Member[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [message, setMessage] = useState("");
+
+  const [messageText, setMessageText] = useState("");
+  const [messageType, setMessageType] = useState<MessageType>("success");
+
   const [loadingMembers, setLoadingMembers] = useState(true);
   const [loadingSchedules, setLoadingSchedules] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -198,6 +197,8 @@ export default function Page() {
   const [currentUserQuery, setCurrentUserQuery] = useState("");
   const [showCurrentUserSuggestions, setShowCurrentUserSuggestions] = useState(false);
   const [hasSelectedCurrentUser, setHasSelectedCurrentUser] = useState(false);
+
+  const [selectedTimelineEntries, setSelectedTimelineEntries] = useState<Entry[]>([]);
 
   const nicknameBoxRef = useRef<HTMLDivElement | null>(null);
   const currentUserBoxRef = useRef<HTMLDivElement | null>(null);
@@ -211,9 +212,24 @@ export default function Page() {
     memo: "",
   });
 
+  function showToast(text: string, type: MessageType) {
+    setMessageText(text);
+    setMessageType(type);
+  }
+
+  useEffect(() => {
+    if (!messageText) return;
+
+    const timer = window.setTimeout(() => {
+      setMessageText("");
+    }, 2000);
+
+    return () => window.clearTimeout(timer);
+  }, [messageText]);
+
   async function loadMembers() {
     setLoadingMembers(true);
-    setMessage("");
+    setMessageText("");
 
     try {
       const res = await fetch("/api/mahjong?action=members", {
@@ -230,10 +246,11 @@ export default function Page() {
       setCurrentUserQuery("");
       setHasSelectedCurrentUser(false);
     } catch (error) {
-      setMessage(
+      showToast(
         error instanceof Error
           ? error.message
-          : "회원 목록을 불러오는 중 오류가 발생했습니다."
+          : "회원 목록을 불러오는 중 오류가 발생했습니다.",
+        "error"
       );
     } finally {
       setLoadingMembers(false);
@@ -242,7 +259,7 @@ export default function Page() {
 
   async function loadSchedules(date: string) {
     setLoadingSchedules(true);
-    setMessage("");
+    setMessageText("");
 
     try {
       const res = await fetch(
@@ -263,13 +280,16 @@ export default function Page() {
       }));
 
       setEntries(normalized);
+      setSelectedTimelineEntries([]);
     } catch (error) {
-      setMessage(
+      showToast(
         error instanceof Error
           ? error.message
-          : "일정 데이터를 불러오는 중 오류가 발생했습니다."
+          : "일정 데이터를 불러오는 중 오류가 발생했습니다.",
+        "error"
       );
       setEntries([]);
+      setSelectedTimelineEntries([]);
     } finally {
       setLoadingSchedules(false);
     }
@@ -384,40 +404,6 @@ export default function Page() {
     return result;
   }, [dayEntries]);
 
-  const highlightRanges = useMemo(() => {
-    const counts = Array.from({ length: 48 }, (_, slot) => ({ slot, count: 0 }));
-
-    dayEntries.forEach((entry) => {
-      const start = timeToSlot(entry.start);
-      const end = timeToSlot(entry.end);
-      for (let s = start; s < end; s += 1) {
-        counts[s].count += 1;
-      }
-    });
-
-    const result: Array<{ startSlot: number; endSlot: number }> = [];
-    let rangeStart: number | null = null;
-
-    for (let i = 0; i < counts.length; i += 1) {
-      const active = counts[i].count >= 4;
-
-      if (active && rangeStart === null) {
-        rangeStart = i;
-      }
-
-      if ((!active || i === counts.length - 1) && rangeStart !== null) {
-        const endSlot = active && i === counts.length - 1 ? i + 1 : i;
-        result.push({
-          startSlot: rangeStart,
-          endSlot,
-        });
-        rangeStart = null;
-      }
-    }
-
-    return result;
-  }, [dayEntries]);
-
   const tableWarnings = useMemo(() => {
     return (["1탁", "2탁"] as TableType[]).map((table) => {
       const tableEntries = dayEntries.filter((entry) => entry.table === table);
@@ -450,65 +436,6 @@ export default function Page() {
     };
   }, [dayEntries]);
 
-  const confirmCandidates = useMemo<ConfirmCandidate[]>(() => {
-    const MIN_DURATION_SLOTS = 4;
-    const bestByTable = new Map<TableType, ConfirmCandidate>();
-
-    (["1탁", "2탁"] as TableType[]).forEach((table) => {
-      const tableEntries = dayEntries.filter((entry) => entry.table === table);
-
-      for (let startSlot = 0; startSlot <= 48 - MIN_DURATION_SLOTS; startSlot += 1) {
-        for (let endSlot = startSlot + MIN_DURATION_SLOTS; endSlot <= 48; endSlot += 1) {
-          const names = tableEntries
-            .filter((entry) => {
-              const entryStart = timeToSlot(entry.start);
-              const entryEnd = timeToSlot(entry.end);
-              return entryStart <= startSlot && entryEnd >= endSlot;
-            })
-            .map((entry) => entry.nickname);
-
-          const uniqueNames = [...new Set(names)];
-
-          if (uniqueNames.length >= 4) {
-            const candidate: ConfirmCandidate = {
-              table,
-              startSlot,
-              endSlot,
-              start: slotToTime(startSlot),
-              end: slotToTime(endSlot),
-              names: uniqueNames,
-            };
-
-            const prev = bestByTable.get(table);
-
-            if (!prev) {
-              bestByTable.set(table, candidate);
-              continue;
-            }
-
-            const prevDuration = prev.endSlot - prev.startSlot;
-            const currentDuration = candidate.endSlot - candidate.startSlot;
-
-            const shouldReplace =
-              currentDuration > prevDuration ||
-              (currentDuration === prevDuration && candidate.names.length > prev.names.length) ||
-              (currentDuration === prevDuration &&
-                candidate.names.length === prev.names.length &&
-                candidate.startSlot < prev.startSlot);
-
-            if (shouldReplace) {
-              bestByTable.set(table, candidate);
-            }
-          }
-        }
-      }
-    });
-
-    return (["1탁", "2탁"] as TableType[])
-      .map((table) => bestByTable.get(table))
-      .filter((item): item is ConfirmCandidate => Boolean(item));
-  }, [dayEntries]);
-
   const myEntries = useMemo(() => {
     return currentUser
       ? entries
@@ -520,28 +447,99 @@ export default function Page() {
       : [];
   }, [entries, currentUser]);
 
-  function buildConfirmMessage(candidate: ConfirmCandidate) {
-    const memberLines = candidate.names.map((name) => `- ${name}`).join("\n");
+  const selectedTimelineInfo = useMemo(() => {
+    if (selectedTimelineEntries.length !== 4) {
+      return null;
+    }
+
+    const table = selectedTimelineEntries[0].table;
+    const allSameTable = selectedTimelineEntries.every((entry) => entry.table === table);
+
+    if (!allSameTable) {
+      return {
+        table,
+        names: selectedTimelineEntries.map((entry) => entry.nickname),
+        hasCommonTime: false,
+        start: "",
+        end: "",
+        startSlot: -1,
+        endSlot: -1,
+      };
+    }
+
+    const startSlot = Math.max(...selectedTimelineEntries.map((entry) => timeToSlot(entry.start)));
+    const endSlot = Math.min(...selectedTimelineEntries.map((entry) => timeToSlot(entry.end)));
+
+    if (startSlot >= endSlot) {
+      return {
+        table,
+        names: selectedTimelineEntries.map((entry) => entry.nickname),
+        hasCommonTime: false,
+        start: "",
+        end: "",
+        startSlot: -1,
+        endSlot: -1,
+      };
+    }
+
+    return {
+      table,
+      names: selectedTimelineEntries.map((entry) => entry.nickname),
+      hasCommonTime: true,
+      start: slotToTime(startSlot),
+      end: slotToTime(endSlot),
+      startSlot,
+      endSlot,
+    };
+  }, [selectedTimelineEntries]);
+
+  const leftAxisHighlight = useMemo(() => {
+    if (!selectedTimelineInfo?.hasCommonTime) return null;
+    if (selectedTimelineInfo.table !== "1탁") return null;
+    return {
+      startSlot: selectedTimelineInfo.startSlot,
+      endSlot: selectedTimelineInfo.endSlot,
+    };
+  }, [selectedTimelineInfo]);
+
+  const centerAxisHighlight = useMemo(() => {
+    if (!selectedTimelineInfo?.hasCommonTime) return null;
+    if (selectedTimelineInfo.table !== "2탁") return null;
+    return {
+      startSlot: selectedTimelineInfo.startSlot,
+      endSlot: selectedTimelineInfo.endSlot,
+    };
+  }, [selectedTimelineInfo]);
+
+  function buildSelectedGroupMessage() {
+    if (!selectedTimelineInfo || !selectedTimelineInfo.hasCommonTime) return "";
+
+    const memberLines = selectedTimelineInfo.names.map((name) => `- ${name}`).join("\n");
 
     return `🀄 익쏘 마작 모임 확정
 
 📅 ${selectedDate}
-🕒 ${candidate.start} ~ ${candidate.end}
-🪑 ${candidate.table}
+🕒 ${selectedTimelineInfo.start} ~ ${selectedTimelineInfo.end}
+🪑 ${selectedTimelineInfo.table}
 
-참여 가능 인원
+참여 인원
 ${memberLines}
 
 참여 가능하신 분들은 톡방에 확인 남겨주세요.`;
   }
 
-  async function copyConfirmMessage(candidate: ConfirmCandidate) {
+  async function copySelectedGroupMessage() {
+    if (!selectedTimelineInfo || !selectedTimelineInfo.hasCommonTime) {
+      showToast("선택한 4명의 공통 가능 시간이 없습니다.", "error");
+      return;
+    }
+
     try {
-      const text = buildConfirmMessage(candidate);
+      const text = buildSelectedGroupMessage();
       await navigator.clipboard.writeText(text);
-      setMessage(`${candidate.table} ${candidate.start} ~ ${candidate.end} 확정 메시지를 복사했어요.`);
+      showToast("복사되었습니다.", "success");
     } catch {
-      setMessage("복사에 실패했습니다. 브라우저 권한을 확인해주세요.");
+      showToast("복사에 실패했습니다. 브라우저 권한을 확인해주세요.", "error");
     }
   }
 
@@ -559,16 +557,49 @@ ${memberLines}
     setEditingId(null);
   }
 
+  function clearSelectedTimelineEntries() {
+    setSelectedTimelineEntries([]);
+  }
+
+  function toggleTimelineEntry(entry: Entry) {
+    setMessageText("");
+
+    setSelectedTimelineEntries((prev) => {
+      const exists = prev.some((item) => item.id === entry.id);
+
+      if (exists) {
+        return prev.filter((item) => item.id !== entry.id);
+      }
+
+      if (prev.length === 0) {
+        return [entry];
+      }
+
+      const selectedTable = prev[0].table;
+      if (selectedTable !== entry.table) {
+        showToast("다른 탁은 선택할 수 없습니다.", "warning");
+        return prev;
+      }
+
+      if (prev.length >= 4) {
+        showToast("최대 4명까지만 선택할 수 있어요.", "warning");
+        return prev;
+      }
+
+      return [...prev, entry];
+    });
+  }
+
   async function saveEntry(e: React.FormEvent) {
     e.preventDefault();
 
     if (!form.nickname.trim()) {
-      setMessage("닉네임을 입력해주세요.");
+      showToast("닉네임을 입력해주세요.", "error");
       return;
     }
 
     if (timeToSlot(form.start) >= timeToSlot(form.end)) {
-      setMessage("종료시간은 시작시간보다 뒤여야 합니다.");
+      showToast("종료시간은 시작시간보다 뒤여야 합니다.", "error");
       return;
     }
 
@@ -581,12 +612,12 @@ ${memberLines}
     }).length;
 
     if (overlappingCount >= 5) {
-      setMessage(`${form.table}은 해당 시간대에 이미 최대 5명입니다. 탁이 다 찼습니다.`);
+      showToast(`${form.table}은 해당 시간대에 이미 최대 5명입니다. 탁이 다 찼습니다.`, "warning");
       return;
     }
 
     setSaving(true);
-    setMessage("");
+    setMessageText("");
 
     try {
       const res = await fetch("/api/mahjong", {
@@ -612,7 +643,7 @@ ${memberLines}
         throw new Error(data.message || "저장에 실패했습니다.");
       }
 
-      setMessage(editingId ? "일정을 수정했어요." : "일정을 저장했어요.");
+      showToast(editingId ? "일정을 수정했어요." : "일정을 저장했어요.", "success");
       setSelectedDate(form.date);
       setCurrentUser(form.nickname);
       setCurrentUserQuery(form.nickname);
@@ -633,8 +664,9 @@ ${memberLines}
       setNicknameQuery(form.nickname);
       setShowNicknameSuggestions(false);
     } catch (error) {
-      setMessage(
-        error instanceof Error ? error.message : "저장 중 오류가 발생했습니다."
+      showToast(
+        error instanceof Error ? error.message : "저장 중 오류가 발생했습니다.",
+        "error"
       );
     } finally {
       setSaving(false);
@@ -654,11 +686,11 @@ ${memberLines}
     setNicknameQuery(item.nickname);
     setShowNicknameSuggestions(false);
     setTab("input");
-    setMessage("");
+    setMessageText("");
   }
 
   async function deleteEntry(id: string) {
-    setMessage("");
+    setMessageText("");
     setDeletingId(id);
 
     try {
@@ -679,23 +711,41 @@ ${memberLines}
         throw new Error(data.message || "삭제에 실패했습니다.");
       }
 
-      setMessage("일정을 삭제했어요.");
+      showToast("일정을 삭제했어요.", "success");
       await loadSchedules(selectedDate);
 
       if (editingId === id) {
         resetForm();
       }
     } catch (error) {
-      setMessage(
-        error instanceof Error ? error.message : "삭제 중 오류가 발생했습니다."
+      showToast(
+        error instanceof Error ? error.message : "삭제 중 오류가 발생했습니다.",
+        "error"
       );
     } finally {
       setDeletingId(null);
     }
   }
 
+  const toastColorClass =
+    messageType === "success"
+      ? "bg-emerald-500"
+      : messageType === "warning"
+      ? "bg-amber-500"
+      : "bg-rose-500";
+
   return (
     <div className="min-h-screen bg-slate-100 pb-24">
+      {messageText && (
+        <div className="fixed left-1/2 top-4 z-[100] w-[calc(100%-24px)] max-w-md -translate-x-1/2">
+          <div
+            className={`rounded-2xl px-4 py-3 text-center text-sm font-semibold text-white shadow-lg ${toastColorClass}`}
+          >
+            {messageText}
+          </div>
+        </div>
+      )}
+
       <div className="mx-auto flex min-h-screen w-full max-w-md flex-col bg-white shadow-xl">
         <header className="bg-blue-600 px-4 pb-5 pt-6 text-white">
           <h1 className="text-xl font-bold">
@@ -716,7 +766,13 @@ ${memberLines}
             <div className="relative" ref={currentUserBoxRef}>
               <input
                 type="text"
-                value={hasSelectedCurrentUser ? currentUserQuery : showCurrentUserSuggestions ? currentUserQuery : ""}
+                value={
+                  hasSelectedCurrentUser
+                    ? currentUserQuery
+                    : showCurrentUserSuggestions
+                    ? currentUserQuery
+                    : ""
+                }
                 onChange={(e) => {
                   const value = e.target.value;
                   setCurrentUserQuery(value);
@@ -773,12 +829,6 @@ ${memberLines}
             </div>
           </div>
         </div>
-
-        {message && (
-          <div className="mx-3 mt-3 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-            {message}
-          </div>
-        )}
 
         <main className="flex-1">
           {tab === "timeline" && (
@@ -846,130 +896,204 @@ ${memberLines}
 
               <div className="rounded-3xl border bg-white p-3">
                 <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-base font-semibold text-slate-800">카톡용 확정 메시지</h2>
-                  <span className="text-xs text-slate-400">탁당 대표 1개 · 최소 2시간</span>
+                  <h2 className="text-base font-semibold text-slate-800">타임라인</h2>
+                  <span className="text-xs text-slate-400">막대를 눌러 4명 선택</span>
                 </div>
 
-                {loadingSchedules ? (
-                  <div className="rounded-2xl bg-slate-50 px-3 py-3 text-sm text-slate-500">
-                    후보를 불러오는 중입니다.
-                  </div>
-                ) : confirmCandidates.length === 0 ? (
-                  <div className="rounded-2xl bg-slate-50 px-3 py-3 text-sm text-slate-500">
-                    아직 확정 메시지를 만들 수 있는 구간이 없어요.
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {confirmCandidates.map((candidate, idx) => (
-                      <div
-                        key={`${candidate.table}-${candidate.start}-${candidate.end}-${idx}`}
-                        className="rounded-2xl border bg-slate-50 px-3 py-3"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className="text-sm font-semibold text-slate-800">
-                              {candidate.table} · {candidate.start} ~ {candidate.end}
-                            </div>
-                            <div className="mt-1 text-xs text-slate-500">
-                              가능 인원 {candidate.names.length}명
-                            </div>
-                            <div className="mt-2 text-xs text-slate-600">
-                              {candidate.names.join(", ")}
-                            </div>
-                          </div>
+                {selectedTimelineEntries.length > 0 && (
+                  <div className="mb-3 rounded-2xl border bg-slate-50 px-3 py-3">
+                    <div className="text-sm font-semibold text-slate-800">
+                      선택 인원 {selectedTimelineEntries.length} / 4
+                    </div>
+                    <div className="mt-1 text-xs text-slate-600">
+                      {selectedTimelineEntries.map((entry) => entry.nickname).join(", ")}
+                    </div>
 
-                          <button
-                            type="button"
-                            onClick={() => copyConfirmMessage(candidate)}
-                            className="shrink-0 rounded-xl bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
-                          >
-                            복사
-                          </button>
-                        </div>
+                    {selectedTimelineInfo && selectedTimelineEntries.length === 4 && (
+                      <div className="mt-3">
+                        {selectedTimelineInfo.hasCommonTime ? (
+                          <>
+                            <div className="text-sm font-semibold text-slate-800">
+                              공통 가능 시간
+                            </div>
+                            <div className="mt-1 text-sm text-slate-700">
+                              {selectedTimelineInfo.table} · {selectedTimelineInfo.start} ~ {selectedTimelineInfo.end}
+                            </div>
+                            <div className="mt-3 grid grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                onClick={copySelectedGroupMessage}
+                                className="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+                              >
+                                선택 인원 카톡 복사
+                              </button>
+                              <button
+                                type="button"
+                                onClick={clearSelectedTimelineEntries}
+                                className="rounded-2xl bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700"
+                              >
+                                선택 해제
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="text-sm font-semibold text-rose-700">
+                              선택한 4명의 공통 가능 시간이 없습니다.
+                            </div>
+                            <div className="mt-3">
+                              <button
+                                type="button"
+                                onClick={clearSelectedTimelineEntries}
+                                className="rounded-2xl bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700"
+                              >
+                                선택 해제
+                              </button>
+                            </div>
+                          </>
+                        )}
                       </div>
-                    ))}
+                    )}
                   </div>
                 )}
-              </div>
 
-              <div className="rounded-3xl border bg-white p-3">
-                <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-base font-semibold text-slate-800">타임라인</h2>
-                  <span className="text-xs text-slate-400">고급 색상 · 하이라이트 포함</span>
-                </div>
-
-                <div className="grid grid-cols-[50px_repeat(2,minmax(0,1fr))] gap-2">
+                <div className="grid grid-cols-[50px_minmax(0,1fr)_50px_minmax(0,1fr)] gap-2">
                   <div />
                   <div className="text-center text-xs font-semibold text-emerald-700">1탁</div>
+                  <div />
                   <div className="text-center text-xs font-semibold text-indigo-700">2탁</div>
 
                   <div className="relative h-[960px]">
-                    {timeOptions.map((time, i) => (
-                      <div
-                        key={time}
-                        className="absolute left-0 right-0 flex h-5 -translate-y-1/2 items-start text-[10px] text-slate-400"
-                        style={{ top: `${i * 20}px` }}
-                      >
-                        {time}
-                      </div>
-                    ))}
+                    {timeOptions.map((time, i) => {
+                      const active = leftAxisHighlight
+                        ? isSlotInRange(i, leftAxisHighlight.startSlot, leftAxisHighlight.endSlot)
+                        : false;
+
+                      return (
+                        <div
+                          key={`left-${time}`}
+                          className="absolute left-0 right-0 flex h-5 -translate-y-1/2 items-start text-[10px]"
+                          style={{ top: `${i * 20}px` }}
+                        >
+                          <span
+                            className={`rounded-md px-1.5 py-0.5 ${
+                              active
+                                ? "bg-amber-200/90 font-semibold text-amber-900"
+                                : "text-slate-400"
+                            }`}
+                          >
+                            {time}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
 
-                  {(["1탁", "2탁"] as const).map((column) => {
-                    const columnEntries = timelineByTable[column];
-                    const barColor = column === "1탁" ? "bg-emerald-500" : "bg-indigo-500";
-
-                    return (
+                  <div className="relative h-[960px] overflow-hidden rounded-2xl bg-slate-50">
+                    {timeOptions.map((_, i) => (
                       <div
-                        key={column}
-                        className="relative h-[960px] overflow-hidden rounded-2xl bg-slate-50"
-                      >
-                        {highlightRanges.map((range, idx) => (
-                          <div
-                            key={`highlight-${idx}`}
-                            className="absolute left-0 right-0 bg-amber-100/70"
-                            style={{
-                              top: `${range.startSlot * 20}px`,
-                              height: `${(range.endSlot - range.startSlot) * 20}px`,
-                            }}
-                          />
-                        ))}
+                        key={`line-1-${i}`}
+                        className="absolute left-0 right-0 border-t border-slate-200"
+                        style={{ top: `${i * 20}px` }}
+                      />
+                    ))}
 
-                        {timeOptions.map((_, i) => (
-                          <div
-                            key={i}
-                            className="absolute left-0 right-0 border-t border-slate-200"
-                            style={{ top: `${i * 20}px` }}
-                          />
-                        ))}
+                    {timelineByTable["1탁"].map((entry) => {
+                      const start = timeToSlot(entry.start);
+                      const end = timeToSlot(entry.end);
+                      const isSelected = selectedTimelineEntries.some((item) => item.id === entry.id);
 
-                        {columnEntries.map((entry) => {
-                          const start = timeToSlot(entry.start);
-                          const end = timeToSlot(entry.end);
+                      return (
+                        <button
+                          key={entry.id}
+                          type="button"
+                          onClick={() => toggleTimelineEntry(entry)}
+                          className={`absolute rounded-xl bg-emerald-500 py-2 text-center text-[11px] font-semibold text-white shadow transition ${
+                            isSelected ? "ring-4 ring-yellow-300 scale-[1.02]" : ""
+                          }`}
+                          style={{
+                            left: `calc(${entry.lane} * 20% + 2px)`,
+                            width: "calc(20% - 4px)",
+                            top: `${start * 20}px`,
+                            height: `${(end - start) * 20}px`,
+                          }}
+                          title={`${entry.nickname} ${entry.start}-${entry.end}`}
+                        >
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <span className="-rotate-90 whitespace-nowrap leading-none text-[10px]">
+                              {entry.nickname}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
 
-                          return (
-                            <div
-                              key={entry.id}
-                              className={`absolute rounded-xl ${barColor} py-2 text-center text-[11px] font-semibold text-white shadow`}
-                              style={{
-                                left: `calc(${entry.lane} * 20% + 2px)`,
-                                width: "calc(20% - 4px)",
-                                top: `${start * 20}px`,
-                                height: `${(end - start) * 20}px`,
-                              }}
-                              title={`${entry.nickname} ${entry.start}-${entry.end}`}
-                            >
-                              <div className="absolute inset-0 flex items-center justify-center">
-                                <span className="-rotate-90 whitespace-nowrap leading-none text-[10px]">
-                                  {entry.nickname}
-                                </span>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
+                  <div className="relative h-[960px]">
+                    {timeOptions.map((time, i) => {
+                      const active = centerAxisHighlight
+                        ? isSlotInRange(i, centerAxisHighlight.startSlot, centerAxisHighlight.endSlot)
+                        : false;
+
+                      return (
+                        <div
+                          key={`center-${time}`}
+                          className="absolute left-0 right-0 flex h-5 -translate-y-1/2 items-start justify-center text-[10px]"
+                          style={{ top: `${i * 20}px` }}
+                        >
+                          <span
+                            className={`rounded-md px-1.5 py-0.5 ${
+                              active
+                                ? "bg-amber-200/90 font-semibold text-amber-900"
+                                : "text-slate-400"
+                            }`}
+                          >
+                            {time}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="relative h-[960px] overflow-hidden rounded-2xl bg-slate-50">
+                    {timeOptions.map((_, i) => (
+                      <div
+                        key={`line-2-${i}`}
+                        className="absolute left-0 right-0 border-t border-slate-200"
+                        style={{ top: `${i * 20}px` }}
+                      />
+                    ))}
+
+                    {timelineByTable["2탁"].map((entry) => {
+                      const start = timeToSlot(entry.start);
+                      const end = timeToSlot(entry.end);
+                      const isSelected = selectedTimelineEntries.some((item) => item.id === entry.id);
+
+                      return (
+                        <button
+                          key={entry.id}
+                          type="button"
+                          onClick={() => toggleTimelineEntry(entry)}
+                          className={`absolute rounded-xl bg-indigo-500 py-2 text-center text-[11px] font-semibold text-white shadow transition ${
+                            isSelected ? "ring-4 ring-yellow-300 scale-[1.02]" : ""
+                          }`}
+                          style={{
+                            left: `calc(${entry.lane} * 20% + 2px)`,
+                            width: "calc(20% - 4px)",
+                            top: `${start * 20}px`,
+                            height: `${(end - start) * 20}px`,
+                          }}
+                          title={`${entry.nickname} ${entry.start}-${entry.end}`}
+                        >
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <span className="-rotate-90 whitespace-nowrap leading-none text-[10px]">
+                              {entry.nickname}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             </div>
