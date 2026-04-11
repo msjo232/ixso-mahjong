@@ -199,6 +199,8 @@ export default function Page() {
   const [showCurrentUserSuggestions, setShowCurrentUserSuggestions] = useState(false);
   const [hasSelectedCurrentUser, setHasSelectedCurrentUser] = useState(false);
 
+  const [selectedTimelineEntries, setSelectedTimelineEntries] = useState<Entry[]>([]);
+
   const nicknameBoxRef = useRef<HTMLDivElement | null>(null);
   const currentUserBoxRef = useRef<HTMLDivElement | null>(null);
 
@@ -263,6 +265,7 @@ export default function Page() {
       }));
 
       setEntries(normalized);
+      setSelectedTimelineEntries([]);
     } catch (error) {
       setMessage(
         error instanceof Error
@@ -270,6 +273,7 @@ export default function Page() {
           : "일정 데이터를 불러오는 중 오류가 발생했습니다."
       );
       setEntries([]);
+      setSelectedTimelineEntries([]);
     } finally {
       setLoadingSchedules(false);
     }
@@ -520,6 +524,46 @@ export default function Page() {
       : [];
   }, [entries, currentUser]);
 
+  const selectedTimelineInfo = useMemo(() => {
+    if (selectedTimelineEntries.length !== 4) {
+      return null;
+    }
+
+    const table = selectedTimelineEntries[0].table;
+    const allSameTable = selectedTimelineEntries.every((entry) => entry.table === table);
+
+    if (!allSameTable) {
+      return {
+        table,
+        names: selectedTimelineEntries.map((entry) => entry.nickname),
+        hasCommonTime: false,
+        start: "",
+        end: "",
+      };
+    }
+
+    const startSlot = Math.max(...selectedTimelineEntries.map((entry) => timeToSlot(entry.start)));
+    const endSlot = Math.min(...selectedTimelineEntries.map((entry) => timeToSlot(entry.end)));
+
+    if (startSlot >= endSlot) {
+      return {
+        table,
+        names: selectedTimelineEntries.map((entry) => entry.nickname),
+        hasCommonTime: false,
+        start: "",
+        end: "",
+      };
+    }
+
+    return {
+      table,
+      names: selectedTimelineEntries.map((entry) => entry.nickname),
+      hasCommonTime: true,
+      start: slotToTime(startSlot),
+      end: slotToTime(endSlot),
+    };
+  }, [selectedTimelineEntries]);
+
   function buildConfirmMessage(candidate: ConfirmCandidate) {
     const memberLines = candidate.names.map((name) => `- ${name}`).join("\n");
 
@@ -535,11 +579,43 @@ ${memberLines}
 참여 가능하신 분들은 톡방에 확인 남겨주세요.`;
   }
 
+  function buildSelectedGroupMessage() {
+    if (!selectedTimelineInfo || !selectedTimelineInfo.hasCommonTime) return "";
+
+    const memberLines = selectedTimelineInfo.names.map((name) => `- ${name}`).join("\n");
+
+    return `🀄 익쏘 마작 모임 확정
+
+📅 ${selectedDate}
+🕒 ${selectedTimelineInfo.start} ~ ${selectedTimelineInfo.end}
+🪑 ${selectedTimelineInfo.table}
+
+참여 인원
+${memberLines}
+
+참여 가능하신 분들은 톡방에 확인 남겨주세요.`;
+  }
+
   async function copyConfirmMessage(candidate: ConfirmCandidate) {
     try {
       const text = buildConfirmMessage(candidate);
       await navigator.clipboard.writeText(text);
       setMessage(`${candidate.table} ${candidate.start} ~ ${candidate.end} 확정 메시지를 복사했어요.`);
+    } catch {
+      setMessage("복사에 실패했습니다. 브라우저 권한을 확인해주세요.");
+    }
+  }
+
+  async function copySelectedGroupMessage() {
+    if (!selectedTimelineInfo || !selectedTimelineInfo.hasCommonTime) {
+      setMessage("선택한 4명의 공통 가능 시간이 없습니다.");
+      return;
+    }
+
+    try {
+      const text = buildSelectedGroupMessage();
+      await navigator.clipboard.writeText(text);
+      setMessage(`선택한 4명의 공통 시간 메시지를 복사했어요.`);
     } catch {
       setMessage("복사에 실패했습니다. 브라우저 권한을 확인해주세요.");
     }
@@ -557,6 +633,39 @@ ${memberLines}
     setNicknameQuery(currentUser);
     setShowNicknameSuggestions(false);
     setEditingId(null);
+  }
+
+  function clearSelectedTimelineEntries() {
+    setSelectedTimelineEntries([]);
+  }
+
+  function toggleTimelineEntry(entry: Entry) {
+    setMessage("");
+
+    setSelectedTimelineEntries((prev) => {
+      const exists = prev.some((item) => item.id === entry.id);
+
+      if (exists) {
+        return prev.filter((item) => item.id !== entry.id);
+      }
+
+      if (prev.length === 0) {
+        return [entry];
+      }
+
+      const selectedTable = prev[0].table;
+      if (selectedTable !== entry.table) {
+        setMessage("같은 탁의 인원만 함께 선택할 수 있어요.");
+        return prev;
+      }
+
+      if (prev.length >= 4) {
+        setMessage("최대 4명까지만 선택할 수 있어요.");
+        return prev;
+      }
+
+      return [...prev, entry];
+    });
   }
 
   async function saveEntry(e: React.FormEvent) {
@@ -699,7 +808,7 @@ ${memberLines}
       <div className="mx-auto flex min-h-screen w-full max-w-md flex-col bg-white shadow-xl">
         <header className="bg-blue-600 px-4 pb-5 pt-6 text-white">
           <h1 className="text-xl font-bold">
-            익쏘 마작 시간 조율 시스템
+            익쏘 마작 시간 조율 시스템 <span className="text-sm text-yellow-300">(테스트)</span>
           </h1>
           <p className="mt-1 text-sm text-blue-100">모바일 전용 · 1탁 / 2탁 · 06:00 기준</p>
         </header>
@@ -895,8 +1004,65 @@ ${memberLines}
               <div className="rounded-3xl border bg-white p-3">
                 <div className="mb-3 flex items-center justify-between">
                   <h2 className="text-base font-semibold text-slate-800">타임라인</h2>
-                  <span className="text-xs text-slate-400">고급 색상 · 하이라이트 포함</span>
+                  <span className="text-xs text-slate-400">막대를 눌러 4명 선택</span>
                 </div>
+
+                {selectedTimelineEntries.length > 0 && (
+                  <div className="mb-3 rounded-2xl border bg-slate-50 px-3 py-3">
+                    <div className="text-sm font-semibold text-slate-800">
+                      선택 인원 {selectedTimelineEntries.length} / 4
+                    </div>
+                    <div className="mt-1 text-xs text-slate-600">
+                      {selectedTimelineEntries.map((entry) => entry.nickname).join(", ")}
+                    </div>
+
+                    {selectedTimelineInfo && selectedTimelineEntries.length === 4 && (
+                      <div className="mt-3">
+                        {selectedTimelineInfo.hasCommonTime ? (
+                          <>
+                            <div className="text-sm font-semibold text-slate-800">
+                              공통 가능 시간
+                            </div>
+                            <div className="mt-1 text-sm text-slate-700">
+                              {selectedTimelineInfo.table} · {selectedTimelineInfo.start} ~ {selectedTimelineInfo.end}
+                            </div>
+                            <div className="mt-3 grid grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                onClick={copySelectedGroupMessage}
+                                className="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+                              >
+                                선택 인원 카톡 복사
+                              </button>
+                              <button
+                                type="button"
+                                onClick={clearSelectedTimelineEntries}
+                                className="rounded-2xl bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700"
+                              >
+                                선택 해제
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="text-sm font-semibold text-rose-700">
+                              선택한 4명의 공통 가능 시간이 없습니다.
+                            </div>
+                            <div className="mt-3">
+                              <button
+                                type="button"
+                                onClick={clearSelectedTimelineEntries}
+                                className="rounded-2xl bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700"
+                              >
+                                선택 해제
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="grid grid-cols-[50px_repeat(2,minmax(0,1fr))] gap-2">
                   <div />
@@ -946,11 +1112,16 @@ ${memberLines}
                         {columnEntries.map((entry) => {
                           const start = timeToSlot(entry.start);
                           const end = timeToSlot(entry.end);
+                          const isSelected = selectedTimelineEntries.some((item) => item.id === entry.id);
 
                           return (
-                            <div
+                            <button
                               key={entry.id}
-                              className={`absolute rounded-xl ${barColor} py-2 text-center text-[11px] font-semibold text-white shadow`}
+                              type="button"
+                              onClick={() => toggleTimelineEntry(entry)}
+                              className={`absolute rounded-xl py-2 text-center text-[11px] font-semibold text-white shadow transition ${
+                                isSelected ? "ring-4 ring-yellow-300 scale-[1.02]" : ""
+                              } ${barColor}`}
                               style={{
                                 left: `calc(${entry.lane} * 20% + 2px)`,
                                 width: "calc(20% - 4px)",
@@ -964,7 +1135,7 @@ ${memberLines}
                                   {entry.nickname}
                                 </span>
                               </div>
-                            </div>
+                            </button>
                           );
                         })}
                       </div>
