@@ -699,7 +699,7 @@ ${memberLines}
       <div className="mx-auto flex min-h-screen w-full max-w-md flex-col bg-white shadow-xl">
         <header className="bg-blue-600 px-4 pb-5 pt-6 text-white">
           <h1 className="text-xl font-bold">
-            익쏘 마작 시간 조율 시스템 <span className="text-sm text-yellow-300">(테스트)</span>
+            익쏘 마작 시간 조율 시스템
           </h1>
           <p className="mt-1 text-sm text-blue-100">모바일 전용 · 1탁 / 2탁 · 06:00 기준</p>
         </header>
