@@ -1,9 +1,17 @@
-'use client';
+"use client";
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from "react";
 
-type TabType = 'timeline' | 'input' | 'my';
-type TableType = '1탁' | '2탁';
+type TabType = "timeline" | "input" | "my";
+type TableType = "1탁" | "2탁";
+
+type Member = {
+  nickname: string;
+  name?: string;
+  status?: string;
+  role?: string;
+  note?: string;
+};
 
 type Entry = {
   id: string;
@@ -13,83 +21,158 @@ type Entry = {
   end: string;
   table: TableType;
   memo: string;
+  createdAt?: string;
 };
 
-const users = ['아카이브', '랑도', '빵빵빵', '침강', '두부'];
-const tableOptions: TableType[] = ['1탁', '2탁'];
+type MembersResponse = {
+  success: boolean;
+  members: Member[];
+  message?: string;
+};
+
+type SchedulesResponse = {
+  success: boolean;
+  schedules: Entry[];
+  message?: string;
+};
+
+type SaveResponse = {
+  success: boolean;
+  id?: string;
+  message?: string;
+};
+
+function getToday() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
 const timeOptions = Array.from({ length: 48 }, (_, i) => {
-  const h = String(Math.floor(i / 2)).padStart(2, '0');
-  const m = i % 2 === 0 ? '00' : '30';
+  const h = String(Math.floor(i / 2)).padStart(2, "0");
+  const m = i % 2 === 0 ? "00" : "30";
   return `${h}:${m}`;
 });
 
-const initialItems: Entry[] = [
-  {
-    id: '1',
-    nickname: '아카이브',
-    date: '2026-04-11',
-    start: '19:00',
-    end: '23:00',
-    table: '1탁',
-    memo: '늦을 수도 있음',
-  },
-  {
-    id: '2',
-    nickname: '랑도',
-    date: '2026-04-11',
-    start: '20:00',
-    end: '23:00',
-    table: '1탁',
-    memo: '',
-  },
-  {
-    id: '3',
-    nickname: '빵빵빵',
-    date: '2026-04-11',
-    start: '19:30',
-    end: '22:00',
-    table: '2탁',
-    memo: '',
-  },
-  {
-    id: '4',
-    nickname: '침강',
-    date: '2026-04-11',
-    start: '20:00',
-    end: '22:30',
-    table: '2탁',
-    memo: '',
-  },
-];
-
 function timeToSlot(time: string) {
-  const [hour, minute] = time.split(':').map(Number);
+  const [hour, minute] = time.split(":").map(Number);
   return hour * 2 + (minute === 30 ? 1 : 0);
 }
 
 function slotToTime(slot: number) {
-  const h = String(Math.floor(slot / 2)).padStart(2, '0');
-  const m = slot % 2 === 0 ? '00' : '30';
+  const h = String(Math.floor(slot / 2)).padStart(2, "0");
+  const m = slot % 2 === 0 ? "00" : "30";
   return `${h}:${m}`;
 }
 
 export default function Page() {
-  const [tab, setTab] = useState<TabType>('timeline');
-  const [selectedDate, setSelectedDate] = useState('2026-04-11');
-  const [currentUser, setCurrentUser] = useState('아카이브');
-  const [entries, setEntries] = useState<Entry[]>(initialItems);
+  const [tab, setTab] = useState<TabType>("timeline");
+  const [selectedDate, setSelectedDate] = useState(getToday());
+  const [currentUser, setCurrentUser] = useState("");
+  const [members, setMembers] = useState<Member[]>([]);
+  const [entries, setEntries] = useState<Entry[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState("");
+  const [loadingMembers, setLoadingMembers] = useState(true);
+  const [loadingSchedules, setLoadingSchedules] = useState(true);
+  const [saving, setSaving] = useState(false);
 
   const [form, setForm] = useState({
-    nickname: '아카이브',
-    date: '2026-04-11',
-    start: '19:00',
-    end: '23:00',
-    table: '1탁' as TableType,
-    memo: '',
+    nickname: "",
+    date: getToday(),
+    start: "19:00",
+    end: "23:00",
+    table: "1탁" as TableType,
+    memo: "",
   });
+
+  async function loadMembers() {
+    setLoadingMembers(true);
+    setMessage("");
+
+    try {
+      const res = await fetch("/api/mahjong?action=members", {
+        cache: "no-store",
+      });
+      const data: MembersResponse = await res.json();
+
+      if (!data.success) {
+        throw new Error(data.message || "회원 목록을 불러오지 못했습니다.");
+      }
+
+      setMembers(data.members);
+
+      if (data.members.length > 0) {
+        const firstNickname = data.members[0].nickname;
+
+        setCurrentUser((prev) => prev || firstNickname);
+        setForm((prev) => ({
+          ...prev,
+          nickname: prev.nickname || firstNickname,
+        }));
+      }
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "회원 목록을 불러오는 중 오류가 발생했습니다."
+      );
+    } finally {
+      setLoadingMembers(false);
+    }
+  }
+
+  async function loadSchedules(date: string) {
+    setLoadingSchedules(true);
+    setMessage("");
+
+    try {
+      const res = await fetch(
+        `/api/mahjong?action=schedules&date=${encodeURIComponent(date)}`,
+        {
+          cache: "no-store",
+        }
+      );
+      const data: SchedulesResponse = await res.json();
+
+      if (!data.success) {
+        throw new Error(data.message || "일정 데이터를 불러오지 못했습니다.");
+      }
+
+      const normalized = data.schedules.map((item) => ({
+        ...item,
+        table: item.table as TableType,
+      }));
+
+      setEntries(normalized);
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "일정 데이터를 불러오는 중 오류가 발생했습니다."
+      );
+      setEntries([]);
+    } finally {
+      setLoadingSchedules(false);
+    }
+  }
+
+  useEffect(() => {
+    loadMembers();
+  }, []);
+
+  useEffect(() => {
+    loadSchedules(selectedDate);
+    setForm((prev) => ({ ...prev, date: selectedDate }));
+  }, [selectedDate]);
+
+  useEffect(() => {
+    if (currentUser) {
+      setForm((prev) => ({ ...prev, nickname: currentUser }));
+    }
+  }, [currentUser]);
 
   const dayEntries = useMemo(() => {
     return entries.filter((item) => item.date === selectedDate);
@@ -140,67 +223,72 @@ export default function Page() {
     setForm({
       nickname: currentUser,
       date: selectedDate,
-      start: '19:00',
-      end: '23:00',
-      table: '1탁',
-      memo: '',
+      start: "19:00",
+      end: "23:00",
+      table: "1탁",
+      memo: "",
     });
     setEditingId(null);
   }
 
-  function saveEntry(e: React.FormEvent) {
+  async function saveEntry(e: React.FormEvent) {
     e.preventDefault();
 
     if (timeToSlot(form.start) >= timeToSlot(form.end)) {
-      setMessage('종료시간은 시작시간보다 뒤여야 합니다.');
+      setMessage("종료시간은 시작시간보다 뒤여야 합니다.");
       return;
     }
 
-    if (editingId) {
-      setEntries((prev) =>
-        prev.map((item) =>
-          item.id === editingId
-            ? {
-                ...item,
-                nickname: form.nickname,
-                date: form.date,
-                start: form.start,
-                end: form.end,
-                table: form.table,
-                memo: form.memo,
-              }
-            : item
-        )
-      );
-      setMessage('일정을 수정했어요.');
-    } else {
-      setEntries((prev) => [
-        ...prev,
-        {
-          id: String(Date.now()),
+    setSaving(true);
+    setMessage("");
+
+    try {
+      const res = await fetch("/api/mahjong", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "saveSchedule",
+          id: editingId || undefined,
           nickname: form.nickname,
           date: form.date,
           start: form.start,
           end: form.end,
           table: form.table,
           memo: form.memo,
-        },
-      ]);
-      setMessage('일정을 저장했어요.');
-    }
+        }),
+      });
 
-    setSelectedDate(form.date);
-    setCurrentUser(form.nickname);
-    setTab('my');
-    setEditingId(null);
-    setForm({
-      nickname: form.nickname,
-      date: form.date,
-      start: '19:00',
-      end: '23:00',
-      table: '1탁',
-      memo: '',
-    });
+      const data: SaveResponse = await res.json();
+
+      if (!data.success) {
+        throw new Error(data.message || "저장에 실패했습니다.");
+      }
+
+      setMessage(editingId ? "일정을 수정했어요." : "일정을 저장했어요.");
+      setSelectedDate(form.date);
+      setCurrentUser(form.nickname);
+      setTab("my");
+      setEditingId(null);
+
+      await loadSchedules(form.date);
+
+      setForm({
+        nickname: form.nickname,
+        date: form.date,
+        start: "19:00",
+        end: "23:00",
+        table: "1탁",
+        memo: "",
+      });
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "저장 중 오류가 발생했습니다."
+      );
+    } finally {
+      setSaving(false);
+    }
   }
 
   function editEntry(item: Entry) {
@@ -213,15 +301,41 @@ export default function Page() {
       table: item.table,
       memo: item.memo,
     });
-    setTab('input');
-    setMessage('');
+    setTab("input");
+    setMessage("");
   }
 
-  function deleteEntry(id: string) {
-    setEntries((prev) => prev.filter((item) => item.id !== id));
-    setMessage('일정을 삭제했어요.');
-    if (editingId === id) {
-      resetForm();
+  async function deleteEntry(id: string) {
+    setMessage("");
+
+    try {
+      const res = await fetch("/api/mahjong", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "deleteSchedule",
+          id,
+        }),
+      });
+
+      const data: SaveResponse = await res.json();
+
+      if (!data.success) {
+        throw new Error(data.message || "삭제에 실패했습니다.");
+      }
+
+      setMessage("일정을 삭제했어요.");
+      await loadSchedules(selectedDate);
+
+      if (editingId === id) {
+        resetForm();
+      }
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "삭제 중 오류가 발생했습니다."
+      );
     }
   }
 
@@ -238,25 +352,26 @@ export default function Page() {
             <input
               type="date"
               value={selectedDate}
-              onChange={(e) => {
-                setSelectedDate(e.target.value);
-                setForm((prev) => ({ ...prev, date: e.target.value }));
-              }}
+              onChange={(e) => setSelectedDate(e.target.value)}
               className="rounded-xl border px-3 py-2 text-sm"
             />
             <select
               value={currentUser}
-              onChange={(e) => {
-                setCurrentUser(e.target.value);
-                setForm((prev) => ({ ...prev, nickname: e.target.value }));
-              }}
+              onChange={(e) => setCurrentUser(e.target.value)}
               className="rounded-xl border px-3 py-2 text-sm"
+              disabled={loadingMembers || members.length === 0}
             >
-              {users.map((user) => (
-                <option key={user} value={user}>
-                  {user}
-                </option>
-              ))}
+              {loadingMembers ? (
+                <option>회원 불러오는 중...</option>
+              ) : members.length === 0 ? (
+                <option>회원 없음</option>
+              ) : (
+                members.map((user) => (
+                  <option key={user.nickname} value={user.nickname}>
+                    {user.nickname}
+                  </option>
+                ))
+              )}
             </select>
           </div>
         </div>
@@ -268,7 +383,7 @@ export default function Page() {
         )}
 
         <main className="flex-1">
-          {tab === 'timeline' && (
+          {tab === "timeline" && (
             <div className="space-y-3 p-3">
               <div className="rounded-3xl border bg-slate-50 p-4">
                 <h2 className="text-base font-semibold text-slate-800">날짜 요약</h2>
@@ -277,16 +392,24 @@ export default function Page() {
                 <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                   <div className="rounded-2xl bg-white px-3 py-3 text-slate-700">
                     입력 인원
-                    <div className="mt-1 text-lg font-bold text-slate-900">{dayEntries.length}명</div>
+                    <div className="mt-1 text-lg font-bold text-slate-900">
+                      {loadingSchedules ? "-" : `${dayEntries.length}명`}
+                    </div>
                   </div>
                   <div className="rounded-2xl bg-white px-3 py-3 text-slate-700">
                     겹침 구간
-                    <div className="mt-1 text-lg font-bold text-slate-900">{overlapSummary.length}개</div>
+                    <div className="mt-1 text-lg font-bold text-slate-900">
+                      {loadingSchedules ? "-" : `${overlapSummary.length}개`}
+                    </div>
                   </div>
                 </div>
 
                 <div className="mt-3 space-y-2">
-                  {overlapSummary.length === 0 ? (
+                  {loadingSchedules ? (
+                    <div className="rounded-2xl bg-white px-3 py-3 text-sm text-slate-500">
+                      일정을 불러오는 중입니다.
+                    </div>
+                  ) : overlapSummary.length === 0 ? (
                     <div className="rounded-2xl bg-white px-3 py-3 text-sm text-slate-500">
                       아직 4명 이상 겹치는 구간이 없어요.
                     </div>
@@ -323,7 +446,7 @@ export default function Page() {
                     ))}
                   </div>
 
-                  {(['1탁', '2탁'] as const).map((column) => {
+                  {(["1탁", "2탁"] as const).map((column) => {
                     const columnEntries = dayEntries.filter((entry) => entry.table === column);
 
                     return (
@@ -346,7 +469,7 @@ export default function Page() {
                               className="absolute rounded-2xl bg-green-500 px-1 py-2 text-center text-[10px] font-semibold text-white shadow"
                               style={{
                                 left: `${6 + (idx % 2) * 28}px`,
-                                width: '24px',
+                                width: "24px",
                                 top: `${start * 20}px`,
                                 height: `${(end - start) * 20}px`,
                               }}
@@ -365,7 +488,7 @@ export default function Page() {
             </div>
           )}
 
-          {tab === 'input' && (
+          {tab === "input" && (
             <div className="p-3">
               <div className="rounded-3xl border bg-slate-50 p-4">
                 <h2 className="text-lg font-semibold text-slate-800">가능 시간 입력</h2>
@@ -379,9 +502,9 @@ export default function Page() {
                       onChange={(e) => setForm((prev) => ({ ...prev, nickname: e.target.value }))}
                       className="w-full rounded-2xl border px-4 py-3 text-sm"
                     >
-                      {users.map((user) => (
-                        <option key={user} value={user}>
-                          {user}
+                      {members.map((user) => (
+                        <option key={user.nickname} value={user.nickname}>
+                          {user.nickname}
                         </option>
                       ))}
                     </select>
@@ -433,14 +556,13 @@ export default function Page() {
                     <label className="mb-2 block text-sm font-medium text-slate-700">희망탁</label>
                     <select
                       value={form.table}
-                      onChange={(e) => setForm((prev) => ({ ...prev, table: e.target.value as TableType }))}
+                      onChange={(e) =>
+                        setForm((prev) => ({ ...prev, table: e.target.value as TableType }))
+                      }
                       className="w-full rounded-2xl border px-4 py-3 text-sm"
                     >
-                      {tableOptions.map((table) => (
-                        <option key={table} value={table}>
-                          {table}
-                        </option>
-                      ))}
+                      <option value="1탁">1탁</option>
+                      <option value="2탁">2탁</option>
                     </select>
                   </div>
 
@@ -456,8 +578,12 @@ export default function Page() {
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
-                    <button type="submit" className="rounded-2xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow">
-                      {editingId ? '수정 저장' : '저장'}
+                    <button
+                      type="submit"
+                      disabled={saving}
+                      className="rounded-2xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow disabled:opacity-50"
+                    >
+                      {saving ? "저장 중..." : editingId ? "수정 저장" : "저장"}
                     </button>
                     <button
                       type="button"
@@ -472,7 +598,7 @@ export default function Page() {
             </div>
           )}
 
-          {tab === 'my' && (
+          {tab === "my" && (
             <div className="p-3">
               <div className="mb-3 rounded-3xl border bg-slate-50 p-4">
                 <h2 className="text-lg font-semibold text-slate-800">내 일정</h2>
@@ -482,7 +608,7 @@ export default function Page() {
               <div className="space-y-3">
                 {myEntries.length === 0 ? (
                   <div className="rounded-3xl border bg-slate-50 p-6 text-sm text-slate-500">
-                    아직 입력한 일정이 없습니다.
+                    선택한 날짜에 입력한 일정이 없습니다.
                   </div>
                 ) : (
                   myEntries.map((item) => (
@@ -493,7 +619,9 @@ export default function Page() {
                           <div className="mt-1 text-sm text-slate-600">
                             {item.start} ~ {item.end} · {item.table}
                           </div>
-                          {item.memo && <div className="mt-2 text-sm text-slate-500">메모: {item.memo}</div>}
+                          {item.memo && (
+                            <div className="mt-2 text-sm text-slate-500">메모: {item.memo}</div>
+                          )}
                         </div>
 
                         <div className="grid grid-cols-2 gap-2">
@@ -522,26 +650,32 @@ export default function Page() {
         </main>
       </div>
 
-      <div className="fixed bottom-0 left-0 right-0 border-t bg-white z-50">
+      <div className="fixed bottom-0 left-0 right-0 z-50 border-t bg-white">
         <div className="mx-auto grid max-w-md grid-cols-3">
           <button
             type="button"
-            onClick={() => setTab('timeline')}
-            className={`py-4 text-sm font-medium ${tab === 'timeline' ? 'text-blue-600' : 'text-slate-400'}`}
+            onClick={() => setTab("timeline")}
+            className={`py-4 text-sm font-medium ${
+              tab === "timeline" ? "text-blue-600" : "text-slate-400"
+            }`}
           >
             타임라인
           </button>
           <button
             type="button"
-            onClick={() => setTab('input')}
-            className={`py-4 text-sm font-medium ${tab === 'input' ? 'text-blue-600' : 'text-slate-400'}`}
+            onClick={() => setTab("input")}
+            className={`py-4 text-sm font-medium ${
+              tab === "input" ? "text-blue-600" : "text-slate-400"
+            }`}
           >
             시간입력
           </button>
           <button
             type="button"
-            onClick={() => setTab('my')}
-            className={`py-4 text-sm font-medium ${tab === 'my' ? 'text-blue-600' : 'text-slate-400'}`}
+            onClick={() => setTab("my")}
+            className={`py-4 text-sm font-medium ${
+              tab === "my" ? "text-blue-600" : "text-slate-400"
+            }`}
           >
             내 일정
           </button>
