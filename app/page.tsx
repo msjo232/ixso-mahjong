@@ -46,6 +46,15 @@ type TimelineEntry = Entry & {
   lane: number;
 };
 
+type ConfirmCandidate = {
+  table: TableType;
+  startSlot: number;
+  endSlot: number;
+  start: string;
+  end: string;
+  names: string[];
+};
+
 function getToday() {
   const now = new Date();
   const year = now.getFullYear();
@@ -132,6 +141,7 @@ export default function Page() {
   const [loadingMembers, setLoadingMembers] = useState(true);
   const [loadingSchedules, setLoadingSchedules] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     nickname: "",
@@ -333,6 +343,67 @@ export default function Page() {
     };
   }, [dayEntries]);
 
+const confirmCandidates = useMemo<ConfirmCandidate[]>(() => {
+  const MIN_DURATION_SLOTS = 4; // 2시간
+  const bestByTable = new Map<TableType, ConfirmCandidate>();
+
+  (["1탁", "2탁"] as TableType[]).forEach((table) => {
+    const tableEntries = dayEntries.filter((entry) => entry.table === table);
+
+    for (let startSlot = 0; startSlot <= 48 - MIN_DURATION_SLOTS; startSlot += 1) {
+      for (let endSlot = startSlot + MIN_DURATION_SLOTS; endSlot <= 48; endSlot += 1) {
+        const names = tableEntries
+          .filter((entry) => {
+            const entryStart = timeToSlot(entry.start);
+            const entryEnd = timeToSlot(entry.end);
+            return entryStart <= startSlot && entryEnd >= endSlot;
+          })
+          .map((entry) => entry.nickname);
+
+        const uniqueNames = [...new Set(names)];
+
+        if (uniqueNames.length >= 4) {
+          const candidate: ConfirmCandidate = {
+            table,
+            startSlot,
+            endSlot,
+            start: slotToTime(startSlot),
+            end: slotToTime(endSlot),
+            names: uniqueNames,
+          };
+
+          const prev = bestByTable.get(table);
+
+          if (!prev) {
+            bestByTable.set(table, candidate);
+            continue;
+          }
+
+          const prevDuration = prev.endSlot - prev.startSlot;
+          const currentDuration = candidate.endSlot - candidate.startSlot;
+
+          const shouldReplace =
+            currentDuration > prevDuration ||
+            (currentDuration === prevDuration && candidate.names.length > prev.names.length) ||
+            (currentDuration === prevDuration &&
+              candidate.names.length === prev.names.length &&
+              candidate.startSlot < prev.startSlot);
+
+          if (shouldReplace) {
+            bestByTable.set(table, candidate);
+          }
+        }
+      }
+    }
+  });
+
+  return (["1탁", "2탁"] as TableType[])
+    .map((table) => bestByTable.get(table))
+    .filter((item): item is ConfirmCandidate => Boolean(item));
+}, [dayEntries]);
+
+  
+
   const myEntries = useMemo(() => {
     return entries
       .filter((item) => item.nickname === currentUser)
@@ -341,6 +412,31 @@ export default function Page() {
         return timeToSlot(a.start) - timeToSlot(b.start);
       });
   }, [entries, currentUser]);
+
+  function buildConfirmMessage(candidate: ConfirmCandidate) {
+    const memberLines = candidate.names.map((name) => `- ${name}`).join("\n");
+
+    return `🀄 익쏘 마작 모임 확정
+
+📅 ${selectedDate}
+🕒 ${candidate.start} ~ ${candidate.end}
+🪑 ${candidate.table}
+
+참여 가능 인원
+${memberLines}
+
+참여 가능하신 분들은 톡방에 확인 남겨주세요.`;
+  }
+
+  async function copyConfirmMessage(candidate: ConfirmCandidate) {
+    try {
+      const text = buildConfirmMessage(candidate);
+      await navigator.clipboard.writeText(text);
+      setMessage(`${candidate.table} ${candidate.start} ~ ${candidate.end} 확정 메시지를 복사했어요.`);
+    } catch {
+      setMessage("복사에 실패했습니다. 브라우저 권한을 확인해주세요.");
+    }
+  }
 
   function resetForm() {
     setForm({
@@ -443,6 +539,7 @@ export default function Page() {
 
   async function deleteEntry(id: string) {
     setMessage("");
+    setDeletingId(id);
 
     try {
       const res = await fetch("/api/mahjong", {
@@ -472,6 +569,8 @@ export default function Page() {
       setMessage(
         error instanceof Error ? error.message : "삭제 중 오류가 발생했습니다."
       );
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -479,7 +578,9 @@ export default function Page() {
     <div className="min-h-screen bg-slate-100 pb-24">
       <div className="mx-auto flex min-h-screen w-full max-w-md flex-col bg-white shadow-xl">
         <header className="bg-blue-600 px-4 pb-5 pt-6 text-white">
-          <h1 className="text-xl font-bold">익쏘 마작 시간 조율 시스템</h1>
+          <h1 className="text-xl font-bold">
+            익쏘 마작 시간 조율 시스템
+          </h1>
           <p className="mt-1 text-sm text-blue-100">모바일 전용 · 1탁 / 2탁 · 06:00 기준</p>
         </header>
 
@@ -584,6 +685,54 @@ export default function Page() {
 
               <div className="rounded-3xl border bg-white p-3">
                 <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-base font-semibold text-slate-800">카톡용 확정 메시지</h2>
+                  <span className="text-xs text-slate-400">최소 2시간 · 4명 이상 기준</span>
+                </div>
+
+                {loadingSchedules ? (
+                  <div className="rounded-2xl bg-slate-50 px-3 py-3 text-sm text-slate-500">
+                    후보를 불러오는 중입니다.
+                  </div>
+                ) : confirmCandidates.length === 0 ? (
+                  <div className="rounded-2xl bg-slate-50 px-3 py-3 text-sm text-slate-500">
+                    아직 확정 메시지를 만들 수 있는 구간이 없어요.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {confirmCandidates.map((candidate, idx) => (
+                      <div
+                        key={`${candidate.table}-${candidate.start}-${candidate.end}-${idx}`}
+                        className="rounded-2xl border bg-slate-50 px-3 py-3"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-800">
+                              {candidate.table} · {candidate.start} ~ {candidate.end}
+                            </div>
+                            <div className="mt-1 text-xs text-slate-500">
+                              가능 인원 {candidate.names.length}명
+                            </div>
+                            <div className="mt-2 text-xs text-slate-600">
+                              {candidate.names.join(", ")}
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => copyConfirmMessage(candidate)}
+                            className="shrink-0 rounded-xl bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
+                          >
+                            복사
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-3xl border bg-white p-3">
+                <div className="mb-3 flex items-center justify-between">
                   <h2 className="text-base font-semibold text-slate-800">타임라인</h2>
                   <span className="text-xs text-slate-400">고급 색상 · 하이라이트 포함</span>
                 </div>
@@ -607,10 +756,7 @@ export default function Page() {
 
                   {(["1탁", "2탁"] as const).map((column) => {
                     const columnEntries = timelineByTable[column];
-                    const barColor =
-                      column === "1탁"
-                        ? "bg-emerald-500"
-                        : "bg-indigo-500";
+                    const barColor = column === "1탁" ? "bg-emerald-500" : "bg-indigo-500";
 
                     return (
                       <div
@@ -821,9 +967,10 @@ export default function Page() {
                           <button
                             type="button"
                             onClick={() => deleteEntry(item.id)}
-                            className="rounded-2xl bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700"
+                            disabled={deletingId !== null}
+                            className="rounded-2xl bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 disabled:opacity-50"
                           >
-                            삭제
+                            {deletingId === item.id ? "삭제중..." : "삭제"}
                           </button>
                         </div>
                       </div>
