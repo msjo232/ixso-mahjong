@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type TabType = "timeline" | "input" | "my";
 type TableType = "1탁" | "2탁";
@@ -73,6 +73,55 @@ const timeOptions = Array.from({ length: 48 }, (_, i) => {
   return `${h}:${m}`;
 });
 
+const CHOSEONG = [
+  "ㄱ",
+  "ㄲ",
+  "ㄴ",
+  "ㄷ",
+  "ㄸ",
+  "ㄹ",
+  "ㅁ",
+  "ㅂ",
+  "ㅃ",
+  "ㅅ",
+  "ㅆ",
+  "ㅇ",
+  "ㅈ",
+  "ㅉ",
+  "ㅊ",
+  "ㅋ",
+  "ㅌ",
+  "ㅍ",
+  "ㅎ",
+];
+
+function getChoseong(text: string) {
+  return text
+    .split("")
+    .map((char) => {
+      const code = char.charCodeAt(0) - 0xac00;
+      if (code >= 0 && code <= 11171) {
+        return CHOSEONG[Math.floor(code / 588)];
+      }
+      return char;
+    })
+    .join("");
+}
+
+function matchesNickname(query: string, nickname: string) {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+
+  const lowerNickname = nickname.toLowerCase();
+  const nicknameChoseong = getChoseong(nickname);
+
+  return (
+    lowerNickname.includes(q) ||
+    nicknameChoseong.includes(q) ||
+    nickname.includes(query.trim())
+  );
+}
+
 function timeToSlot(time: string) {
   const [hour, minute] = time.split(":").map(Number);
   let slot = hour * 2 + (minute === 30 ? 1 : 0);
@@ -143,6 +192,16 @@ export default function Page() {
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  const [nicknameQuery, setNicknameQuery] = useState("");
+  const [showNicknameSuggestions, setShowNicknameSuggestions] = useState(false);
+
+  const [currentUserQuery, setCurrentUserQuery] = useState("");
+  const [showCurrentUserSuggestions, setShowCurrentUserSuggestions] = useState(false);
+  const [hasSelectedCurrentUser, setHasSelectedCurrentUser] = useState(false);
+
+  const nicknameBoxRef = useRef<HTMLDivElement | null>(null);
+  const currentUserBoxRef = useRef<HTMLDivElement | null>(null);
+
   const [form, setForm] = useState({
     nickname: "",
     date: getToday(),
@@ -167,16 +226,9 @@ export default function Page() {
       }
 
       setMembers(data.members);
-
-      if (data.members.length > 0) {
-        const firstNickname = data.members[0].nickname;
-
-        setCurrentUser((prev) => prev || firstNickname);
-        setForm((prev) => ({
-          ...prev,
-          nickname: prev.nickname || firstNickname,
-        }));
-      }
+      setCurrentUser("");
+      setCurrentUserQuery("");
+      setHasSelectedCurrentUser(false);
     } catch (error) {
       setMessage(
         error instanceof Error
@@ -234,13 +286,68 @@ export default function Page() {
 
   useEffect(() => {
     if (currentUser) {
-      setForm((prev) => ({ ...prev, nickname: currentUser }));
+      setCurrentUserQuery(currentUser);
+      setForm((prev) => ({
+        ...prev,
+        nickname: prev.nickname || currentUser,
+      }));
+      setNicknameQuery((prev) => prev || currentUser);
     }
   }, [currentUser]);
+
+  useEffect(() => {
+    if (form.nickname) {
+      setNicknameQuery(form.nickname);
+    }
+  }, [form.nickname]);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      const target = event.target as Node;
+
+      if (nicknameBoxRef.current && !nicknameBoxRef.current.contains(target)) {
+        setShowNicknameSuggestions(false);
+      }
+
+      if (currentUserBoxRef.current && !currentUserBoxRef.current.contains(target)) {
+        setShowCurrentUserSuggestions(false);
+        if (hasSelectedCurrentUser && currentUser) {
+          setCurrentUserQuery(currentUser);
+        } else {
+          setCurrentUserQuery("");
+        }
+      }
+    }
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [currentUser, hasSelectedCurrentUser]);
 
   const dayEntries = useMemo(() => {
     return entries.filter((item) => item.date === selectedDate);
   }, [entries, selectedDate]);
+
+  const filteredMembers = useMemo(() => {
+    if (!nicknameQuery.trim()) {
+      return members.slice(0, 8);
+    }
+
+    return members
+      .filter((member) => matchesNickname(nicknameQuery, member.nickname))
+      .slice(0, 8);
+  }, [members, nicknameQuery]);
+
+  const filteredCurrentUsers = useMemo(() => {
+    if (!currentUserQuery.trim()) {
+      return members.slice(0, 8);
+    }
+
+    return members
+      .filter((member) => matchesNickname(currentUserQuery, member.nickname))
+      .slice(0, 8);
+  }, [members, currentUserQuery]);
 
   const overlapSummary = useMemo(() => {
     const counts = Array.from({ length: 48 }, (_, slot) => ({ slot, count: 0 }));
@@ -343,74 +450,74 @@ export default function Page() {
     };
   }, [dayEntries]);
 
-const confirmCandidates = useMemo<ConfirmCandidate[]>(() => {
-  const MIN_DURATION_SLOTS = 4; // 2시간
-  const bestByTable = new Map<TableType, ConfirmCandidate>();
+  const confirmCandidates = useMemo<ConfirmCandidate[]>(() => {
+    const MIN_DURATION_SLOTS = 4;
+    const bestByTable = new Map<TableType, ConfirmCandidate>();
 
-  (["1탁", "2탁"] as TableType[]).forEach((table) => {
-    const tableEntries = dayEntries.filter((entry) => entry.table === table);
+    (["1탁", "2탁"] as TableType[]).forEach((table) => {
+      const tableEntries = dayEntries.filter((entry) => entry.table === table);
 
-    for (let startSlot = 0; startSlot <= 48 - MIN_DURATION_SLOTS; startSlot += 1) {
-      for (let endSlot = startSlot + MIN_DURATION_SLOTS; endSlot <= 48; endSlot += 1) {
-        const names = tableEntries
-          .filter((entry) => {
-            const entryStart = timeToSlot(entry.start);
-            const entryEnd = timeToSlot(entry.end);
-            return entryStart <= startSlot && entryEnd >= endSlot;
-          })
-          .map((entry) => entry.nickname);
+      for (let startSlot = 0; startSlot <= 48 - MIN_DURATION_SLOTS; startSlot += 1) {
+        for (let endSlot = startSlot + MIN_DURATION_SLOTS; endSlot <= 48; endSlot += 1) {
+          const names = tableEntries
+            .filter((entry) => {
+              const entryStart = timeToSlot(entry.start);
+              const entryEnd = timeToSlot(entry.end);
+              return entryStart <= startSlot && entryEnd >= endSlot;
+            })
+            .map((entry) => entry.nickname);
 
-        const uniqueNames = [...new Set(names)];
+          const uniqueNames = [...new Set(names)];
 
-        if (uniqueNames.length >= 4) {
-          const candidate: ConfirmCandidate = {
-            table,
-            startSlot,
-            endSlot,
-            start: slotToTime(startSlot),
-            end: slotToTime(endSlot),
-            names: uniqueNames,
-          };
+          if (uniqueNames.length >= 4) {
+            const candidate: ConfirmCandidate = {
+              table,
+              startSlot,
+              endSlot,
+              start: slotToTime(startSlot),
+              end: slotToTime(endSlot),
+              names: uniqueNames,
+            };
 
-          const prev = bestByTable.get(table);
+            const prev = bestByTable.get(table);
 
-          if (!prev) {
-            bestByTable.set(table, candidate);
-            continue;
-          }
+            if (!prev) {
+              bestByTable.set(table, candidate);
+              continue;
+            }
 
-          const prevDuration = prev.endSlot - prev.startSlot;
-          const currentDuration = candidate.endSlot - candidate.startSlot;
+            const prevDuration = prev.endSlot - prev.startSlot;
+            const currentDuration = candidate.endSlot - candidate.startSlot;
 
-          const shouldReplace =
-            currentDuration > prevDuration ||
-            (currentDuration === prevDuration && candidate.names.length > prev.names.length) ||
-            (currentDuration === prevDuration &&
-              candidate.names.length === prev.names.length &&
-              candidate.startSlot < prev.startSlot);
+            const shouldReplace =
+              currentDuration > prevDuration ||
+              (currentDuration === prevDuration && candidate.names.length > prev.names.length) ||
+              (currentDuration === prevDuration &&
+                candidate.names.length === prev.names.length &&
+                candidate.startSlot < prev.startSlot);
 
-          if (shouldReplace) {
-            bestByTable.set(table, candidate);
+            if (shouldReplace) {
+              bestByTable.set(table, candidate);
+            }
           }
         }
       }
-    }
-  });
+    });
 
-  return (["1탁", "2탁"] as TableType[])
-    .map((table) => bestByTable.get(table))
-    .filter((item): item is ConfirmCandidate => Boolean(item));
-}, [dayEntries]);
-
-  
+    return (["1탁", "2탁"] as TableType[])
+      .map((table) => bestByTable.get(table))
+      .filter((item): item is ConfirmCandidate => Boolean(item));
+  }, [dayEntries]);
 
   const myEntries = useMemo(() => {
-    return entries
-      .filter((item) => item.nickname === currentUser)
-      .sort((a, b) => {
-        if (a.date !== b.date) return a.date.localeCompare(b.date);
-        return timeToSlot(a.start) - timeToSlot(b.start);
-      });
+    return currentUser
+      ? entries
+          .filter((item) => item.nickname === currentUser)
+          .sort((a, b) => {
+            if (a.date !== b.date) return a.date.localeCompare(b.date);
+            return timeToSlot(a.start) - timeToSlot(b.start);
+          })
+      : [];
   }, [entries, currentUser]);
 
   function buildConfirmMessage(candidate: ConfirmCandidate) {
@@ -447,11 +554,18 @@ ${memberLines}
       table: "1탁",
       memo: "",
     });
+    setNicknameQuery(currentUser);
+    setShowNicknameSuggestions(false);
     setEditingId(null);
   }
 
   async function saveEntry(e: React.FormEvent) {
     e.preventDefault();
+
+    if (!form.nickname.trim()) {
+      setMessage("닉네임을 입력해주세요.");
+      return;
+    }
 
     if (timeToSlot(form.start) >= timeToSlot(form.end)) {
       setMessage("종료시간은 시작시간보다 뒤여야 합니다.");
@@ -501,6 +615,8 @@ ${memberLines}
       setMessage(editingId ? "일정을 수정했어요." : "일정을 저장했어요.");
       setSelectedDate(form.date);
       setCurrentUser(form.nickname);
+      setCurrentUserQuery(form.nickname);
+      setHasSelectedCurrentUser(true);
       setTab("my");
       setEditingId(null);
 
@@ -514,6 +630,8 @@ ${memberLines}
         table: "1탁",
         memo: "",
       });
+      setNicknameQuery(form.nickname);
+      setShowNicknameSuggestions(false);
     } catch (error) {
       setMessage(
         error instanceof Error ? error.message : "저장 중 오류가 발생했습니다."
@@ -533,6 +651,8 @@ ${memberLines}
       table: item.table,
       memo: item.memo,
     });
+    setNicknameQuery(item.nickname);
+    setShowNicknameSuggestions(false);
     setTab("input");
     setMessage("");
   }
@@ -592,24 +712,65 @@ ${memberLines}
               onChange={(e) => setSelectedDate(e.target.value)}
               className="rounded-xl border px-3 py-2 text-sm"
             />
-            <select
-              value={currentUser}
-              onChange={(e) => setCurrentUser(e.target.value)}
-              className="rounded-xl border px-3 py-2 text-sm"
-              disabled={loadingMembers || members.length === 0}
-            >
-              {loadingMembers ? (
-                <option>회원 불러오는 중...</option>
-              ) : members.length === 0 ? (
-                <option>회원 없음</option>
-              ) : (
-                members.map((user) => (
-                  <option key={user.nickname} value={user.nickname}>
-                    {user.nickname}
-                  </option>
-                ))
+
+            <div className="relative" ref={currentUserBoxRef}>
+              <input
+                type="text"
+                value={hasSelectedCurrentUser ? currentUserQuery : showCurrentUserSuggestions ? currentUserQuery : ""}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setCurrentUserQuery(value);
+                  setShowCurrentUserSuggestions(true);
+                }}
+                onFocus={() => {
+                  setShowCurrentUserSuggestions(true);
+                  if (!hasSelectedCurrentUser) {
+                    setCurrentUserQuery("");
+                  }
+                }}
+                placeholder={loadingMembers ? "회원 불러오는 중..." : "회원검색"}
+                disabled={loadingMembers || members.length === 0}
+                className="w-full rounded-xl border px-3 py-2 text-sm"
+              />
+
+              {showCurrentUserSuggestions && filteredCurrentUsers.length > 0 && !loadingMembers && (
+                <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 max-h-60 overflow-y-auto rounded-2xl border bg-white shadow-lg">
+                  {filteredCurrentUsers.map((user) => (
+                    <button
+                      key={user.nickname}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setCurrentUser(user.nickname);
+                        setCurrentUserQuery(user.nickname);
+                        setHasSelectedCurrentUser(true);
+                        setShowCurrentUserSuggestions(false);
+                        setForm((prev) => ({
+                          ...prev,
+                          nickname: user.nickname,
+                        }));
+                        setNicknameQuery(user.nickname);
+                      }}
+                      className="block w-full border-b px-4 py-3 text-left text-sm text-slate-700 last:border-b-0 hover:bg-slate-50"
+                    >
+                      <div className="font-medium">{user.nickname}</div>
+                      {user.name && (
+                        <div className="mt-0.5 text-xs text-slate-400">{user.name}</div>
+                      )}
+                    </button>
+                  ))}
+                </div>
               )}
-            </select>
+
+              {showCurrentUserSuggestions &&
+                currentUserQuery.trim() &&
+                filteredCurrentUsers.length === 0 &&
+                !loadingMembers && (
+                  <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 rounded-2xl border bg-white px-4 py-3 text-sm text-slate-500 shadow-lg">
+                    검색 결과가 없어요.
+                  </div>
+                )}
+            </div>
           </div>
         </div>
 
@@ -686,7 +847,7 @@ ${memberLines}
               <div className="rounded-3xl border bg-white p-3">
                 <div className="mb-3 flex items-center justify-between">
                   <h2 className="text-base font-semibold text-slate-800">카톡용 확정 메시지</h2>
-                  <span className="text-xs text-slate-400">최소 2시간 · 4명 이상 기준</span>
+                  <span className="text-xs text-slate-400">탁당 대표 1개 · 최소 2시간</span>
                 </div>
 
                 {loadingSchedules ? (
@@ -799,7 +960,7 @@ ${memberLines}
                               title={`${entry.nickname} ${entry.start}-${entry.end}`}
                             >
                               <div className="absolute inset-0 flex items-center justify-center">
-                                <span className="-rotate-90 whitespace-nowrap leading-none">
+                                <span className="-rotate-90 whitespace-nowrap leading-none text-[10px]">
                                   {entry.nickname}
                                 </span>
                               </div>
@@ -823,19 +984,52 @@ ${memberLines}
                 </p>
 
                 <form onSubmit={saveEntry} className="mt-4 space-y-4">
-                  <div>
+                  <div className="relative" ref={nicknameBoxRef}>
                     <label className="mb-2 block text-sm font-medium text-slate-700">닉네임</label>
-                    <select
-                      value={form.nickname}
-                      onChange={(e) => setForm((prev) => ({ ...prev, nickname: e.target.value }))}
+                    <input
+                      type="text"
+                      value={nicknameQuery}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setNicknameQuery(value);
+                        setShowNicknameSuggestions(true);
+                        setForm((prev) => ({ ...prev, nickname: value }));
+                      }}
+                      onFocus={() => setShowNicknameSuggestions(true)}
+                      placeholder="닉네임 검색 (초성 가능)"
                       className="w-full rounded-2xl border px-4 py-3 text-sm"
-                    >
-                      {members.map((user) => (
-                        <option key={user.nickname} value={user.nickname}>
-                          {user.nickname}
-                        </option>
-                      ))}
-                    </select>
+                    />
+
+                    {showNicknameSuggestions && filteredMembers.length > 0 && (
+                      <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 max-h-60 overflow-y-auto rounded-2xl border bg-white shadow-lg">
+                        {filteredMembers.map((user) => (
+                          <button
+                            key={user.nickname}
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setForm((prev) => ({ ...prev, nickname: user.nickname }));
+                              setNicknameQuery(user.nickname);
+                              setShowNicknameSuggestions(false);
+                            }}
+                            className="block w-full border-b px-4 py-3 text-left text-sm text-slate-700 last:border-b-0 hover:bg-slate-50"
+                          >
+                            <div className="font-medium">{user.nickname}</div>
+                            {user.name && (
+                              <div className="mt-0.5 text-xs text-slate-400">{user.name}</div>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {showNicknameSuggestions &&
+                      nicknameQuery.trim() &&
+                      filteredMembers.length === 0 && (
+                        <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 rounded-2xl border bg-white px-4 py-3 text-sm text-slate-500 shadow-lg">
+                          검색 결과가 없어요.
+                        </div>
+                      )}
                   </div>
 
                   <div>
@@ -934,13 +1128,15 @@ ${memberLines}
             <div className="p-3">
               <div className="mb-3 rounded-3xl border bg-slate-50 p-4">
                 <h2 className="text-lg font-semibold text-slate-800">내 일정</h2>
-                <p className="mt-1 text-sm text-slate-500">현재 선택된 닉네임: {currentUser}</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  현재 선택된 닉네임: {currentUser || "선택 안 됨"}
+                </p>
               </div>
 
               <div className="space-y-3">
                 {myEntries.length === 0 ? (
                   <div className="rounded-3xl border bg-slate-50 p-6 text-sm text-slate-500">
-                    선택한 날짜에 입력한 일정이 없습니다.
+                    선택한 회원의 일정이 없습니다.
                   </div>
                 ) : (
                   myEntries.map((item) => (
