@@ -25,6 +25,14 @@ type Entry = {
   createdAt?: string;
 };
 
+type MemoItem = {
+  id: string;
+  date: string;
+  nickname: string;
+  content: string;
+  createdAt?: string;
+};
+
 type MembersResponse = {
   success: boolean;
   members: Member[];
@@ -34,6 +42,12 @@ type MembersResponse = {
 type SchedulesResponse = {
   success: boolean;
   schedules: Entry[];
+  message?: string;
+};
+
+type MemosResponse = {
+  success: boolean;
+  memos: MemoItem[];
   message?: string;
 };
 
@@ -55,9 +69,16 @@ function getToday() {
   return `${year}-${month}-${day}`;
 }
 
-/**
- * 06:00 ~ 익일 05:30
- */
+function isSameOrAfterToday(dateString: string) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const target = new Date(`${dateString}T00:00:00`);
+  if (Number.isNaN(target.getTime())) return false;
+
+  return target >= today;
+}
+
 const timeOptions = Array.from({ length: 48 }, (_, i) => {
   const total = i + 12;
   const h = String(Math.floor(total / 2) % 24).padStart(2, "0");
@@ -115,13 +136,12 @@ function matchesNickname(query: string, nickname: string) {
 }
 
 function timeToSlot(time: string) {
-  const [hour, minute] = time.split(":").map(Number);
+  const m = String(time || "").match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return 0;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
   let slot = hour * 2 + (minute === 30 ? 1 : 0);
-
-  if (slot < 12) {
-    slot += 48;
-  }
-
+  if (slot < 12) slot += 48;
   return slot - 12;
 }
 
@@ -137,7 +157,6 @@ function overlaps(aStart: string, aEnd: string, bStart: string, bEnd: string) {
   const aE = timeToSlot(aEnd);
   const bS = timeToSlot(bStart);
   const bE = timeToSlot(bEnd);
-
   return aS < bE && aE > bS;
 }
 
@@ -155,7 +174,6 @@ function assignLanes(entries: Entry[]): TimelineEntry[] {
     const endSlot = timeToSlot(entry.end);
 
     let assignedLane = 0;
-
     for (let i = 0; i < 5; i += 1) {
       if (startSlot >= laneEndSlots[i]) {
         assignedLane = i;
@@ -175,12 +193,103 @@ function isSlotInRange(slot: number, startSlot: number, endSlot: number) {
   return slot >= startSlot && slot <= endSlot;
 }
 
+function formatDateTime(value?: string) {
+  if (!value) return "";
+  const date = new Date(value.replace(" ", "T"));
+  if (Number.isNaN(date.getTime())) return value;
+
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `${y}-${m}-${d} ${hh}:${mm}`;
+}
+
+function normalizeDate(value: unknown) {
+  const str = String(value || "").trim();
+  if (!str) return "";
+  const m = str.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (m) return m[1];
+
+  const parsed = new Date(str);
+  if (!Number.isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const mo = String(parsed.getMonth() + 1).padStart(2, "0");
+    const d = String(parsed.getDate()).padStart(2, "0");
+    return `${y}-${mo}-${d}`;
+  }
+
+  return str;
+}
+
+function normalizeTime(value: unknown) {
+  const str = String(value || "").trim();
+  if (!str) return "";
+  const m = str.match(/^(\d{1,2}):(\d{2})/);
+  if (m) return `${m[1].padStart(2, "0")}:${m[2]}`;
+
+  const parsed = new Date(str);
+  if (!Number.isNaN(parsed.getTime())) {
+    const hh = String(parsed.getHours()).padStart(2, "0");
+    const mm = String(parsed.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+
+  return str;
+}
+
+function normalizeTable(value: unknown): TableType {
+  const str = String(value || "").trim();
+  return str === "2탁" ? "2탁" : "1탁";
+}
+
+function normalizeEntry(raw: any): Entry {
+  return {
+    id: String(raw?.id || ""),
+    nickname: String(raw?.nickname || ""),
+    date: normalizeDate(raw?.date),
+    start: normalizeTime(raw?.start),
+    end: normalizeTime(raw?.end),
+    table: normalizeTable(raw?.table),
+    memo: String(raw?.memo || ""),
+    createdAt: String(raw?.createdAt || ""),
+  };
+}
+
+function normalizeMemo(raw: any): MemoItem {
+  return {
+    id: String(raw?.id || ""),
+    date: normalizeDate(raw?.date),
+    nickname: String(raw?.nickname || ""),
+    content: String(raw?.content || ""),
+    createdAt: String(raw?.createdAt || ""),
+  };
+}
+
+function getKoreanWeekday(dateString: string) {
+  const date = new Date(`${dateString}T00:00:00`);
+  const weekdays = ["일", "월", "화", "수", "목", "금", "토"];
+  return weekdays[date.getDay()] || "";
+}
+
+function formatKoreanDate(dateString: string) {
+  const date = new Date(`${dateString}T00:00:00`);
+  const y = date.getFullYear();
+  const m = date.getMonth() + 1;
+  const d = date.getDate();
+  const weekday = getKoreanWeekday(dateString);
+  return `${y}. ${m}. ${d} (${weekday})`;
+}
+
 export default function Page() {
   const [tab, setTab] = useState<TabType>("timeline");
   const [selectedDate, setSelectedDate] = useState(getToday());
   const [currentUser, setCurrentUser] = useState("");
   const [members, setMembers] = useState<Member[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [allEntries, setAllEntries] = useState<Entry[]>([]);
+  const [memos, setMemos] = useState<MemoItem[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const [messageText, setMessageText] = useState("");
@@ -188,17 +297,25 @@ export default function Page() {
 
   const [loadingMembers, setLoadingMembers] = useState(true);
   const [loadingSchedules, setLoadingSchedules] = useState(true);
+  const [loadingMemos, setLoadingMemos] = useState(true);
+
   const [saving, setSaving] = useState(false);
+  const [savingMemo, setSavingMemo] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deletingMemoId, setDeletingMemoId] = useState<string | null>(null);
 
   const [nicknameQuery, setNicknameQuery] = useState("");
   const [showNicknameSuggestions, setShowNicknameSuggestions] = useState(false);
 
   const [currentUserQuery, setCurrentUserQuery] = useState("");
-  const [showCurrentUserSuggestions, setShowCurrentUserSuggestions] = useState(false);
+  const [showCurrentUserSuggestions, setShowCurrentUserSuggestions] =
+    useState(false);
   const [hasSelectedCurrentUser, setHasSelectedCurrentUser] = useState(false);
 
-  const [selectedTimelineEntries, setSelectedTimelineEntries] = useState<Entry[]>([]);
+  const [selectedTimelineEntries, setSelectedTimelineEntries] = useState<Entry[]>(
+    []
+  );
+  const [memoInput, setMemoInput] = useState("");
 
   const nicknameBoxRef = useRef<HTMLDivElement | null>(null);
   const currentUserBoxRef = useRef<HTMLDivElement | null>(null);
@@ -219,18 +336,12 @@ export default function Page() {
 
   useEffect(() => {
     if (!messageText) return;
-
-    const timer = window.setTimeout(() => {
-      setMessageText("");
-    }, 2000);
-
+    const timer = window.setTimeout(() => setMessageText(""), 2000);
     return () => window.clearTimeout(timer);
   }, [messageText]);
 
   async function loadMembers() {
     setLoadingMembers(true);
-    setMessageText("");
-
     try {
       const res = await fetch("/api/mahjong?action=members", {
         cache: "no-store",
@@ -241,7 +352,7 @@ export default function Page() {
         throw new Error(data.message || "회원 목록을 불러오지 못했습니다.");
       }
 
-      setMembers(data.members);
+      setMembers(data.members || []);
       setCurrentUser("");
       setCurrentUserQuery("");
       setHasSelectedCurrentUser(false);
@@ -259,14 +370,10 @@ export default function Page() {
 
   async function loadSchedules(date: string) {
     setLoadingSchedules(true);
-    setMessageText("");
-
     try {
       const res = await fetch(
         `/api/mahjong?action=schedules&date=${encodeURIComponent(date)}`,
-        {
-          cache: "no-store",
-        }
+        { cache: "no-store" }
       );
       const data: SchedulesResponse = await res.json();
 
@@ -274,13 +381,7 @@ export default function Page() {
         throw new Error(data.message || "일정 데이터를 불러오지 못했습니다.");
       }
 
-      const normalized = data.schedules.map((item) => ({
-        ...item,
-        table: item.table as TableType,
-      }));
-
-      setEntries(normalized);
-      setSelectedTimelineEntries([]);
+      setEntries((data.schedules || []).map(normalizeEntry));
     } catch (error) {
       showToast(
         error instanceof Error
@@ -289,19 +390,71 @@ export default function Page() {
         "error"
       );
       setEntries([]);
-      setSelectedTimelineEntries([]);
     } finally {
       setLoadingSchedules(false);
     }
   }
 
+  async function loadAllSchedules() {
+    try {
+      const res = await fetch("/api/mahjong?action=schedules", {
+        cache: "no-store",
+      });
+      const data: SchedulesResponse = await res.json();
+
+      if (!data.success) {
+        throw new Error(data.message || "전체 일정 데이터를 불러오지 못했습니다.");
+      }
+
+      setAllEntries((data.schedules || []).map(normalizeEntry));
+    } catch (error) {
+      showToast(
+        error instanceof Error
+          ? error.message
+          : "전체 일정 데이터를 불러오는 중 오류가 발생했습니다.",
+        "error"
+      );
+      setAllEntries([]);
+    }
+  }
+
+  async function loadMemos(date: string) {
+    setLoadingMemos(true);
+    try {
+      const res = await fetch(
+        `/api/mahjong?action=memos&date=${encodeURIComponent(date)}`,
+        { cache: "no-store" }
+      );
+      const data: MemosResponse = await res.json();
+
+      if (!data.success) {
+        throw new Error(data.message || "메모 데이터를 불러오지 못했습니다.");
+      }
+
+      setMemos((data.memos || []).map(normalizeMemo));
+    } catch (error) {
+      showToast(
+        error instanceof Error
+          ? error.message
+          : "메모 데이터를 불러오는 중 오류가 발생했습니다.",
+        "error"
+      );
+      setMemos([]);
+    } finally {
+      setLoadingMemos(false);
+    }
+  }
+
   useEffect(() => {
     loadMembers();
+    loadAllSchedules();
   }, []);
 
   useEffect(() => {
     loadSchedules(selectedDate);
+    loadMemos(selectedDate);
     setForm((prev) => ({ ...prev, date: selectedDate }));
+    setSelectedTimelineEntries([]);
   }, [selectedDate]);
 
   useEffect(() => {
@@ -329,7 +482,10 @@ export default function Page() {
         setShowNicknameSuggestions(false);
       }
 
-      if (currentUserBoxRef.current && !currentUserBoxRef.current.contains(target)) {
+      if (
+        currentUserBoxRef.current &&
+        !currentUserBoxRef.current.contains(target)
+      ) {
         setShowCurrentUserSuggestions(false);
         if (hasSelectedCurrentUser && currentUser) {
           setCurrentUserQuery(currentUser);
@@ -340,206 +496,293 @@ export default function Page() {
     }
 
     document.addEventListener("mousedown", handleClickOutside);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-    };
+    return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [currentUser, hasSelectedCurrentUser]);
 
-  const dayEntries = useMemo(() => {
-    return entries.filter((item) => item.date === selectedDate);
-  }, [entries, selectedDate]);
+  const dayEntries = useMemo(
+    () => entries.filter((item) => item.date === selectedDate),
+    [entries, selectedDate]
+  );
 
   const filteredMembers = useMemo(() => {
-    if (!nicknameQuery.trim()) {
-      return members.slice(0, 8);
-    }
-
+    if (!nicknameQuery.trim()) return members.slice(0, 8);
     return members
       .filter((member) => matchesNickname(nicknameQuery, member.nickname))
       .slice(0, 8);
   }, [members, nicknameQuery]);
 
   const filteredCurrentUsers = useMemo(() => {
-    if (!currentUserQuery.trim()) {
-      return members.slice(0, 8);
-    }
-
+    if (!currentUserQuery.trim()) return members.slice(0, 8);
     return members
       .filter((member) => matchesNickname(currentUserQuery, member.nickname))
       .slice(0, 8);
   }, [members, currentUserQuery]);
 
-  const overlapSummary = useMemo(() => {
-    const counts = Array.from({ length: 48 }, (_, slot) => ({ slot, count: 0 }));
-
-    dayEntries.forEach((entry) => {
-      const start = timeToSlot(entry.start);
-      const end = timeToSlot(entry.end);
-      for (let s = start; s < end; s += 1) {
-        counts[s].count += 1;
-      }
-    });
-
-    const result: Array<{ start: string; end: string; count: number }> = [];
-    let rangeStart: number | null = null;
-
-    for (let i = 0; i < counts.length; i += 1) {
-      const active = counts[i].count >= 4;
-
-      if (active && rangeStart === null) {
-        rangeStart = i;
-      }
-
-      if ((!active || i === counts.length - 1) && rangeStart !== null) {
-        const endSlot = active && i === counts.length - 1 ? i + 1 : i;
-        result.push({
-          start: slotToTime(rangeStart),
-          end: slotToTime(endSlot),
-          count: Math.max(...counts.slice(rangeStart, endSlot).map((v) => v.count)),
-        });
-        rangeStart = null;
-      }
-    }
-
-    return result;
-  }, [dayEntries]);
-
-  const tableWarnings = useMemo(() => {
-    return (["1탁", "2탁"] as TableType[]).map((table) => {
-      const tableEntries = dayEntries.filter((entry) => entry.table === table);
-      let maxOverlap = 0;
-
-      for (let slot = 0; slot < 48; slot += 1) {
-        const count = tableEntries.filter((entry) => {
-          const start = timeToSlot(entry.start);
-          const end = timeToSlot(entry.end);
-          return slot >= start && slot < end;
-        }).length;
-
-        if (count > maxOverlap) {
-          maxOverlap = count;
-        }
-      }
-
-      return {
-        table,
-        maxOverlap,
-        full: maxOverlap >= 5,
-      };
-    });
-  }, [dayEntries]);
-
-  const timelineByTable = useMemo(() => {
-    return {
+  const timelineByTable = useMemo(
+    () => ({
       "1탁": assignLanes(dayEntries.filter((entry) => entry.table === "1탁")),
       "2탁": assignLanes(dayEntries.filter((entry) => entry.table === "2탁")),
-    };
-  }, [dayEntries]);
+    }),
+    [dayEntries]
+  );
 
   const myEntries = useMemo(() => {
     return currentUser
-      ? entries
-          .filter((item) => item.nickname === currentUser)
+      ? [...allEntries]
+          .filter(
+            (item) =>
+              item.nickname === currentUser && isSameOrAfterToday(item.date)
+          )
           .sort((a, b) => {
             if (a.date !== b.date) return a.date.localeCompare(b.date);
             return timeToSlot(a.start) - timeToSlot(b.start);
           })
       : [];
-  }, [entries, currentUser]);
+  }, [allEntries, currentUser]);
 
-  const selectedTimelineInfo = useMemo(() => {
-    if (selectedTimelineEntries.length !== 4) {
-      return null;
-    }
+  const mergedMemos = useMemo(() => {
+    return [...memos].sort((a, b) => {
+      const aTime = new Date((a.createdAt || "").replace(" ", "T")).getTime();
+      const bTime = new Date((b.createdAt || "").replace(" ", "T")).getTime();
 
-    const table = selectedTimelineEntries[0].table;
-    const allSameTable = selectedTimelineEntries.every((entry) => entry.table === table);
+      if (Number.isNaN(aTime) && Number.isNaN(bTime)) return 0;
+      if (Number.isNaN(aTime)) return 1;
+      if (Number.isNaN(bTime)) return -1;
+      return aTime - bTime;
+    });
+  }, [memos]);
 
-    if (!allSameTable) {
+  const selectedCommonInfo = useMemo(() => {
+    if (selectedTimelineEntries.length < 2) return null;
+
+    const first = selectedTimelineEntries[0];
+    const sameTable = selectedTimelineEntries.every(
+      (entry) => entry.table === first.table
+    );
+
+    if (!sameTable) {
       return {
-        table,
-        names: selectedTimelineEntries.map((entry) => entry.nickname),
         hasCommonTime: false,
+        table: first.table,
         start: "",
         end: "",
-        startSlot: -1,
-        endSlot: -1,
+        names: selectedTimelineEntries.map((entry) => entry.nickname),
       };
     }
 
-    const startSlot = Math.max(...selectedTimelineEntries.map((entry) => timeToSlot(entry.start)));
-    const endSlot = Math.min(...selectedTimelineEntries.map((entry) => timeToSlot(entry.end)));
+    const startSlot = Math.max(
+      ...selectedTimelineEntries.map((entry) => timeToSlot(entry.start))
+    );
+    const endSlot = Math.min(
+      ...selectedTimelineEntries.map((entry) => timeToSlot(entry.end))
+    );
 
     if (startSlot >= endSlot) {
       return {
-        table,
-        names: selectedTimelineEntries.map((entry) => entry.nickname),
         hasCommonTime: false,
+        table: first.table,
         start: "",
         end: "",
-        startSlot: -1,
-        endSlot: -1,
+        names: selectedTimelineEntries.map((entry) => entry.nickname),
       };
     }
 
     return {
-      table,
-      names: selectedTimelineEntries.map((entry) => entry.nickname),
       hasCommonTime: true,
+      table: first.table,
       start: slotToTime(startSlot),
       end: slotToTime(endSlot),
-      startSlot,
-      endSlot,
+      names: selectedTimelineEntries.map((entry) => entry.nickname),
     };
   }, [selectedTimelineEntries]);
 
   const leftAxisHighlight = useMemo(() => {
-    if (!selectedTimelineInfo?.hasCommonTime) return null;
-    if (selectedTimelineInfo.table !== "1탁") return null;
+    if (!selectedCommonInfo?.hasCommonTime) return null;
+    if (selectedCommonInfo.table !== "1탁") return null;
     return {
-      startSlot: selectedTimelineInfo.startSlot,
-      endSlot: selectedTimelineInfo.endSlot,
+      startSlot: timeToSlot(selectedCommonInfo.start),
+      endSlot: timeToSlot(selectedCommonInfo.end),
     };
-  }, [selectedTimelineInfo]);
+  }, [selectedCommonInfo]);
 
   const centerAxisHighlight = useMemo(() => {
-    if (!selectedTimelineInfo?.hasCommonTime) return null;
-    if (selectedTimelineInfo.table !== "2탁") return null;
+    if (!selectedCommonInfo?.hasCommonTime) return null;
+    if (selectedCommonInfo.table !== "2탁") return null;
     return {
-      startSlot: selectedTimelineInfo.startSlot,
-      endSlot: selectedTimelineInfo.endSlot,
+      startSlot: timeToSlot(selectedCommonInfo.start),
+      endSlot: timeToSlot(selectedCommonInfo.end),
     };
-  }, [selectedTimelineInfo]);
+  }, [selectedCommonInfo]);
 
-  function buildSelectedGroupMessage() {
-    if (!selectedTimelineInfo || !selectedTimelineInfo.hasCommonTime) return "";
+  function buildSinglePromoMessage() {
+    if (selectedTimelineEntries.length !== 1) return "";
 
-    const memberLines = selectedTimelineInfo.names.map((name) => `- ${name}`).join("\n");
+    const entry = selectedTimelineEntries[0];
+    const weekday = getKoreanWeekday(entry.date);
 
-    return `🀄 익쏘 마작 모임 확정
+    return `🀄 익쏘 마작 모집
 
-📅 ${selectedDate}
-🕒 ${selectedTimelineInfo.start} ~ ${selectedTimelineInfo.end}
-🪑 ${selectedTimelineInfo.table}
+📅 ${entry.date} (${weekday})
+🕒 ${entry.start} ~ ${entry.end}
+🪑 ${entry.table}
 
-참여 인원
-${memberLines}
+현재 가능 인원 1명
+${entry.nickname}
 
-참여 가능하신 분들은 톡방에 확인 남겨주세요.`;
+3인 모집중입니다.
+
+참여 가능하신 분은 일정등록해주세요.`;
   }
 
-  async function copySelectedGroupMessage() {
-    if (!selectedTimelineInfo || !selectedTimelineInfo.hasCommonTime) {
-      showToast("선택한 4명의 공통 가능 시간이 없습니다.", "error");
+  function buildCommonPromoMessage() {
+    if (!selectedCommonInfo || !selectedCommonInfo.hasCommonTime) return "";
+
+    const count = selectedTimelineEntries.length;
+    const names = selectedCommonInfo.names.join(", ");
+    const weekday = getKoreanWeekday(selectedDate);
+
+    if (count >= 4) {
+      return `🀄 익쏘 마작 확정
+
+📅 ${selectedDate} (${weekday})
+🕒 ${selectedCommonInfo.start} ~ ${selectedCommonInfo.end}
+🪑 ${selectedCommonInfo.table}
+
+참가 인원 4명
+${names}
+
+모집이 완료되었습니다 👍`;
+    }
+
+    const needed = Math.max(0, 4 - count);
+
+    return `🀄 익쏘 마작 모집
+
+📅 ${selectedDate} (${weekday})
+🕒 ${selectedCommonInfo.start} ~ ${selectedCommonInfo.end}
+🪑 ${selectedCommonInfo.table}
+
+현재 가능 인원 ${count}명
+${names}
+
+${needed}인 모집중입니다.
+
+참여 가능하신 분은 일정등록해주세요.`;
+  }
+
+  async function copyText(text: string, successText = "복사되었습니다.") {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(successText, "success");
+    } catch {
+      showToast("복사에 실패했습니다. 브라우저 권한을 확인해주세요.", "error");
+    }
+  }
+
+  async function copySinglePromoMessage() {
+    const text = buildSinglePromoMessage();
+    if (!text) {
+      showToast("1명 선택 시에만 사용할 수 있습니다.", "warning");
+      return;
+    }
+    await copyText(text, "홍보 문구가 복사되었습니다.");
+  }
+
+  async function copyCommonPromoMessage() {
+    const text = buildCommonPromoMessage();
+    if (!text) {
+      showToast("선택한 일정들의 공통시간이 없습니다.", "warning");
+      return;
+    }
+    await copyText(text, "홍보 문구가 복사되었습니다.");
+  }
+
+  async function saveMemo() {
+    if (!currentUser) {
+      showToast("우측 상단에서 닉네임을 먼저 선택해주세요.", "warning");
       return;
     }
 
+    if (!memoInput.trim()) {
+      showToast("메모 내용을 입력해주세요.", "warning");
+      return;
+    }
+
+    setSavingMemo(true);
+
     try {
-      const text = buildSelectedGroupMessage();
-      await navigator.clipboard.writeText(text);
-      showToast("복사되었습니다.", "success");
-    } catch {
-      showToast("복사에 실패했습니다. 브라우저 권한을 확인해주세요.", "error");
+      const res = await fetch("/api/mahjong", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "saveMemo",
+          date: selectedDate,
+          nickname: currentUser,
+          content: memoInput.trim(),
+        }),
+      });
+
+      const data: SaveResponse = await res.json();
+
+      if (!data.success) {
+        throw new Error(data.message || "메모 저장에 실패했습니다.");
+      }
+
+      setMemoInput("");
+      showToast("메모가 저장되었습니다.", "success");
+      await loadMemos(selectedDate);
+    } catch (error) {
+      showToast(
+        error instanceof Error
+          ? error.message
+          : "메모 저장 중 오류가 발생했습니다.",
+        "error"
+      );
+    } finally {
+      setSavingMemo(false);
+    }
+  }
+
+  async function deleteMemo(id: string, nickname: string) {
+    if (nickname !== currentUser) {
+      showToast("선택한 닉네임의 메모만 삭제할 수 있습니다.", "warning");
+      return;
+    }
+
+    const ok = window.confirm("정말 삭제하시겠습니까?");
+    if (!ok) return;
+
+    setDeletingMemoId(id);
+
+    try {
+      const res = await fetch("/api/mahjong", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "deleteMemo",
+          id,
+        }),
+      });
+
+      const data: SaveResponse = await res.json();
+
+      if (!data.success) {
+        throw new Error(data.message || "메모 삭제에 실패했습니다.");
+      }
+
+      showToast("메모가 삭제되었습니다.", "success");
+      await loadMemos(selectedDate);
+      await loadSchedules(selectedDate);
+      await loadAllSchedules();
+    } catch (error) {
+      showToast(
+        error instanceof Error
+          ? error.message
+          : "메모 삭제 중 오류가 발생했습니다.",
+        "error"
+      );
+    } finally {
+      setDeletingMemoId(null);
     }
   }
 
@@ -571,13 +814,11 @@ ${memberLines}
         return prev.filter((item) => item.id !== entry.id);
       }
 
-      if (prev.length === 0) {
-        return [entry];
-      }
+      if (prev.length === 0) return [entry];
 
       const selectedTable = prev[0].table;
       if (selectedTable !== entry.table) {
-        showToast("다른 탁은 선택할 수 없습니다.", "warning");
+        showToast("다른 탁은 같이 선택할 수 없습니다.", "warning");
         return prev;
       }
 
@@ -607,24 +848,23 @@ ${memberLines}
       if (item.table !== form.table) return false;
       if (item.date !== form.date) return false;
       if (editingId && item.id === editingId) return false;
-
       return overlaps(item.start, item.end, form.start, form.end);
     }).length;
 
     if (overlappingCount >= 5) {
-      showToast(`${form.table}은 해당 시간대에 이미 최대 5명입니다. 탁이 다 찼습니다.`, "warning");
+      showToast(
+        `${form.table}은 해당 시간대에 이미 최대 5명입니다. 탁이 다 찼습니다.`,
+        "warning"
+      );
       return;
     }
 
     setSaving(true);
-    setMessageText("");
 
     try {
       const res = await fetch("/api/mahjong", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "saveSchedule",
           id: editingId || undefined,
@@ -643,7 +883,10 @@ ${memberLines}
         throw new Error(data.message || "저장에 실패했습니다.");
       }
 
-      showToast(editingId ? "일정을 수정했어요." : "일정을 저장했어요.", "success");
+      showToast(
+        editingId ? "일정을 수정했어요." : "일정을 저장했어요.",
+        "success"
+      );
       setSelectedDate(form.date);
       setCurrentUser(form.nickname);
       setCurrentUserQuery(form.nickname);
@@ -651,7 +894,7 @@ ${memberLines}
       setTab("my");
       setEditingId(null);
 
-      await loadSchedules(form.date);
+      await Promise.all([loadSchedules(form.date), loadMemos(form.date), loadAllSchedules()]);
 
       setForm({
         nickname: form.nickname,
@@ -685,20 +928,21 @@ ${memberLines}
     });
     setNicknameQuery(item.nickname);
     setShowNicknameSuggestions(false);
+    setSelectedTimelineEntries([item]);
     setTab("input");
     setMessageText("");
   }
 
   async function deleteEntry(id: string) {
-    setMessageText("");
+    const ok = window.confirm("정말 삭제하시겠습니까?");
+    if (!ok) return;
+
     setDeletingId(id);
 
     try {
       const res = await fetch("/api/mahjong", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "deleteSchedule",
           id,
@@ -712,7 +956,10 @@ ${memberLines}
       }
 
       showToast("일정을 삭제했어요.", "success");
+      setSelectedTimelineEntries((prev) => prev.filter((item) => item.id !== id));
       await loadSchedules(selectedDate);
+      await loadMemos(selectedDate);
+      await loadAllSchedules();
 
       if (editingId === id) {
         resetForm();
@@ -748,10 +995,10 @@ ${memberLines}
 
       <div className="mx-auto flex min-h-screen w-full max-w-md flex-col bg-white shadow-xl">
         <header className="bg-blue-600 px-4 pb-5 pt-6 text-white">
-          <h1 className="text-xl font-bold">
-            익쏘 마작 시간 조율 시스템
-          </h1>
-          <p className="mt-1 text-sm text-blue-100">모바일 전용 · 1탁 / 2탁 · 06:00 기준</p>
+          <h1 className="text-xl font-bold">익쏘 마작 시간 조율 시스템</h1>
+          <p className="mt-1 text-sm text-blue-100">
+            모바일 전용 · 1탁 / 2탁 · 06:00 기준
+          </p>
         </header>
 
         <div className="border-b bg-white px-3 py-3">
@@ -789,34 +1036,38 @@ ${memberLines}
                 className="w-full rounded-xl border px-3 py-2 text-sm"
               />
 
-              {showCurrentUserSuggestions && filteredCurrentUsers.length > 0 && !loadingMembers && (
-                <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 max-h-60 overflow-y-auto rounded-2xl border bg-white shadow-lg">
-                  {filteredCurrentUsers.map((user) => (
-                    <button
-                      key={user.nickname}
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        setCurrentUser(user.nickname);
-                        setCurrentUserQuery(user.nickname);
-                        setHasSelectedCurrentUser(true);
-                        setShowCurrentUserSuggestions(false);
-                        setForm((prev) => ({
-                          ...prev,
-                          nickname: user.nickname,
-                        }));
-                        setNicknameQuery(user.nickname);
-                      }}
-                      className="block w-full border-b px-4 py-3 text-left text-sm text-slate-700 last:border-b-0 hover:bg-slate-50"
-                    >
-                      <div className="font-medium">{user.nickname}</div>
-                      {user.name && (
-                        <div className="mt-0.5 text-xs text-slate-400">{user.name}</div>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
+              {showCurrentUserSuggestions &&
+                filteredCurrentUsers.length > 0 &&
+                !loadingMembers && (
+                  <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 max-h-60 overflow-y-auto rounded-2xl border bg-white shadow-lg">
+                    {filteredCurrentUsers.map((user) => (
+                      <button
+                        key={user.nickname}
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setCurrentUser(user.nickname);
+                          setCurrentUserQuery(user.nickname);
+                          setHasSelectedCurrentUser(true);
+                          setShowCurrentUserSuggestions(false);
+                          setForm((prev) => ({
+                            ...prev,
+                            nickname: user.nickname,
+                          }));
+                          setNicknameQuery(user.nickname);
+                        }}
+                        className="block w-full border-b px-4 py-3 text-left text-sm text-slate-700 last:border-b-0 hover:bg-slate-50"
+                      >
+                        <div className="font-medium">{user.nickname}</div>
+                        {user.name && (
+                          <div className="mt-0.5 text-xs text-slate-400">
+                            {user.name}
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
 
               {showCurrentUserSuggestions &&
                 currentUserQuery.trim() &&
@@ -834,139 +1085,129 @@ ${memberLines}
           {tab === "timeline" && (
             <div className="space-y-3 p-3">
               <div className="rounded-3xl border bg-slate-50 p-4">
-                <h2 className="text-base font-semibold text-slate-800">날짜 요약</h2>
-                <p className="mt-1 text-sm text-slate-500">{selectedDate} 06:00 ~ 익일 05:30</p>
-
-                <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-                  <div className="rounded-2xl bg-white px-3 py-3 text-slate-700">
-                    입력 인원
-                    <div className="mt-1 text-lg font-bold text-slate-900">
-                      {loadingSchedules ? "-" : `${dayEntries.length}명`}
-                    </div>
-                  </div>
-                  <div className="rounded-2xl bg-white px-3 py-3 text-slate-700">
-                    겹침 구간
-                    <div className="mt-1 text-lg font-bold text-slate-900">
-                      {loadingSchedules ? "-" : `${overlapSummary.length}개`}
-                    </div>
-                  </div>
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-base font-semibold text-slate-800">메모</h2>
+                  <span />
                 </div>
 
-                <div className="mt-3 space-y-2">
-                  {loadingSchedules ? (
+                <div className="space-y-2">
+                  {loadingMemos ? (
                     <div className="rounded-2xl bg-white px-3 py-3 text-sm text-slate-500">
-                      일정을 불러오는 중입니다.
+                      메모를 불러오는 중입니다.
                     </div>
-                  ) : overlapSummary.length === 0 ? (
+                  ) : mergedMemos.length === 0 ? (
                     <div className="rounded-2xl bg-white px-3 py-3 text-sm text-slate-500">
-                      아직 4명 이상 겹치는 구간이 없어요.
+                      아직 등록된 메모가 없습니다.
                     </div>
                   ) : (
-                    overlapSummary.map((item, idx) => (
-                      <div
-                        key={idx}
-                        className="rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-800"
-                      >
-                        {item.start} ~ {item.end} · 최대 {item.count}명 가능
-                      </div>
-                    ))
+                    mergedMemos.map((item) => {
+                      const canDelete = item.nickname === currentUser;
+
+                      return (
+                        <div key={item.id} className="rounded-2xl bg-white px-3 py-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-center gap-2">
+                              <div className="text-sm font-semibold text-slate-800">
+                                {item.nickname}
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => deleteMemo(item.id, item.nickname)}
+                                disabled={deletingMemoId !== null || !canDelete}
+                                className={
+                                  canDelete
+                                    ? "rounded-md bg-rose-50 px-1.5 py-0.5 text-[11px] font-bold text-rose-700 disabled:opacity-50"
+                                    : "cursor-not-allowed rounded-md bg-gray-100 px-1.5 py-0.5 text-[11px] font-bold text-gray-300"
+                                }
+                                title={
+                                  canDelete
+                                    ? "메모 삭제"
+                                    : "선택한 닉네임의 메모만 삭제할 수 있습니다."
+                                }
+                              >
+                                {deletingMemoId === item.id ? "..." : "×"}
+                              </button>
+                            </div>
+
+                            <div className="shrink-0 text-[11px] text-slate-400">
+                              {formatDateTime(item.createdAt)}
+                            </div>
+                          </div>
+
+                          <div className="mt-2 whitespace-pre-wrap text-sm text-slate-600">
+                            {item.content}
+                          </div>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
 
-                <div className="mt-3 space-y-2">
-                  {tableWarnings.map((item) =>
-                    item.full ? (
-                      <div
-                        key={item.table}
-                        className="rounded-2xl bg-rose-50 px-3 py-3 text-sm text-rose-700"
-                      >
-                        {item.table}은 현재 일부 시간대가 최대 5명으로 가득 찼습니다.
-                      </div>
-                    ) : (
-                      <div
-                        key={item.table}
-                        className="rounded-2xl bg-white px-3 py-3 text-sm text-slate-500"
-                      >
-                        {item.table} 최대 겹침 인원: {item.maxOverlap}명
-                      </div>
-                    )
-                  )}
+                <div className="mt-3 rounded-2xl bg-white p-3">
+                  <div className="mb-2 text-sm font-medium text-slate-700">
+                    메모 작성
+                  </div>
+                  <textarea
+                    value={memoInput}
+                    onChange={(e) => setMemoInput(e.target.value)}
+                    rows={3}
+                    placeholder={
+                      currentUser
+                        ? `${currentUser} 이름으로 메모가 저장됩니다.`
+                        : "우측 상단 회원검색에서 닉네임을 먼저 선택해주세요."
+                    }
+                    className="w-full rounded-2xl border px-4 py-3 text-sm"
+                  />
+                  <div className="mt-3 flex items-center justify-between gap-2">
+                    <div className="text-xs text-slate-500">
+                      저장 닉네임: {currentUser || "선택 안 됨"}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={saveMemo}
+                      disabled={savingMemo}
+                      className="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                    >
+                      {savingMemo ? "메모 저장 중..." : "메모 저장"}
+                    </button>
+                  </div>
                 </div>
               </div>
 
               <div className="rounded-3xl border bg-white p-3">
-                <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-base font-semibold text-slate-800">타임라인</h2>
-                  <span className="text-xs text-slate-400">막대를 눌러 4명 선택</span>
-                </div>
-
-                {selectedTimelineEntries.length > 0 && (
-                  <div className="mb-3 rounded-2xl border bg-slate-50 px-3 py-3">
-                    <div className="text-sm font-semibold text-slate-800">
-                      선택 인원 {selectedTimelineEntries.length} / 4
-                    </div>
-                    <div className="mt-1 text-xs text-slate-600">
-                      {selectedTimelineEntries.map((entry) => entry.nickname).join(", ")}
-                    </div>
-
-                    {selectedTimelineInfo && selectedTimelineEntries.length === 4 && (
-                      <div className="mt-3">
-                        {selectedTimelineInfo.hasCommonTime ? (
-                          <>
-                            <div className="text-sm font-semibold text-slate-800">
-                              공통 가능 시간
-                            </div>
-                            <div className="mt-1 text-sm text-slate-700">
-                              {selectedTimelineInfo.table} · {selectedTimelineInfo.start} ~ {selectedTimelineInfo.end}
-                            </div>
-                            <div className="mt-3 grid grid-cols-2 gap-2">
-                              <button
-                                type="button"
-                                onClick={copySelectedGroupMessage}
-                                className="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
-                              >
-                                선택 인원 카톡 복사
-                              </button>
-                              <button
-                                type="button"
-                                onClick={clearSelectedTimelineEntries}
-                                className="rounded-2xl bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700"
-                              >
-                                선택 해제
-                              </button>
-                            </div>
-                          </>
-                        ) : (
-                          <>
-                            <div className="text-sm font-semibold text-rose-700">
-                              선택한 4명의 공통 가능 시간이 없습니다.
-                            </div>
-                            <div className="mt-3">
-                              <button
-                                type="button"
-                                onClick={clearSelectedTimelineEntries}
-                                className="rounded-2xl bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700"
-                              >
-                                선택 해제
-                              </button>
-                            </div>
-                          </>
-                        )}
+                <div className="mb-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <h2 className="text-base font-semibold text-slate-800">타임라인</h2>
+                    <div className="text-right">
+                      <div className="text-sm font-medium text-slate-500">
+                        {formatKoreanDate(selectedDate)}
                       </div>
-                    )}
+                      <div className="mt-0.5 text-xs text-slate-400">
+                        막대를 눌러 선택
+                      </div>
+                    </div>
                   </div>
-                )}
+                </div>
 
                 <div className="grid grid-cols-[50px_minmax(0,1fr)_50px_minmax(0,1fr)] gap-2">
                   <div />
-                  <div className="text-center text-xs font-semibold text-emerald-700">1탁</div>
+                  <div className="text-center text-xs font-semibold text-emerald-700">
+                    1탁
+                  </div>
                   <div />
-                  <div className="text-center text-xs font-semibold text-indigo-700">2탁</div>
+                  <div className="text-center text-xs font-semibold text-indigo-700">
+                    2탁
+                  </div>
 
                   <div className="relative h-[960px]">
                     {timeOptions.map((time, i) => {
                       const active = leftAxisHighlight
-                        ? isSlotInRange(i, leftAxisHighlight.startSlot, leftAxisHighlight.endSlot)
+                        ? isSlotInRange(
+                            i,
+                            leftAxisHighlight.startSlot,
+                            leftAxisHighlight.endSlot
+                          )
                         : false;
 
                       return (
@@ -1001,7 +1242,9 @@ ${memberLines}
                     {timelineByTable["1탁"].map((entry) => {
                       const start = timeToSlot(entry.start);
                       const end = timeToSlot(entry.end);
-                      const isSelected = selectedTimelineEntries.some((item) => item.id === entry.id);
+                      const isSelected = selectedTimelineEntries.some(
+                        (item) => item.id === entry.id
+                      );
 
                       return (
                         <button
@@ -1016,6 +1259,7 @@ ${memberLines}
                             width: "calc(20% - 4px)",
                             top: `${start * 20}px`,
                             height: `${(end - start) * 20}px`,
+                            zIndex: 2,
                           }}
                           title={`${entry.nickname} ${entry.start}-${entry.end}`}
                         >
@@ -1032,7 +1276,11 @@ ${memberLines}
                   <div className="relative h-[960px]">
                     {timeOptions.map((time, i) => {
                       const active = centerAxisHighlight
-                        ? isSlotInRange(i, centerAxisHighlight.startSlot, centerAxisHighlight.endSlot)
+                        ? isSlotInRange(
+                            i,
+                            centerAxisHighlight.startSlot,
+                            centerAxisHighlight.endSlot
+                          )
                         : false;
 
                       return (
@@ -1067,7 +1315,9 @@ ${memberLines}
                     {timelineByTable["2탁"].map((entry) => {
                       const start = timeToSlot(entry.start);
                       const end = timeToSlot(entry.end);
-                      const isSelected = selectedTimelineEntries.some((item) => item.id === entry.id);
+                      const isSelected = selectedTimelineEntries.some(
+                        (item) => item.id === entry.id
+                      );
 
                       return (
                         <button
@@ -1082,6 +1332,7 @@ ${memberLines}
                             width: "calc(20% - 4px)",
                             top: `${start * 20}px`,
                             height: `${(end - start) * 20}px`,
+                            zIndex: 2,
                           }}
                           title={`${entry.nickname} ${entry.start}-${entry.end}`}
                         >
@@ -1094,6 +1345,7 @@ ${memberLines}
                       );
                     })}
                   </div>
+
                 </div>
               </div>
             </div>
@@ -1104,12 +1356,16 @@ ${memberLines}
               <div className="rounded-3xl border bg-slate-50 p-4">
                 <h2 className="text-lg font-semibold text-slate-800">가능 시간 입력</h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  원하는 날짜와 시간을 입력하세요. 하루 기준은 06:00 ~ 익일 05:30입니다.
+                  원하는 날짜와 시간을 입력하세요.
+                  <br />
+                  하루 기준은 06:00 ~ 익일 05:30입니다.
                 </p>
 
                 <form onSubmit={saveEntry} className="mt-4 space-y-4">
                   <div className="relative" ref={nicknameBoxRef}>
-                    <label className="mb-2 block text-sm font-medium text-slate-700">닉네임</label>
+                    <label className="mb-2 block text-sm font-medium text-slate-700">
+                      닉네임
+                    </label>
                     <input
                       type="text"
                       value={nicknameQuery}
@@ -1132,7 +1388,10 @@ ${memberLines}
                             type="button"
                             onMouseDown={(e) => e.preventDefault()}
                             onClick={() => {
-                              setForm((prev) => ({ ...prev, nickname: user.nickname }));
+                              setForm((prev) => ({
+                                ...prev,
+                                nickname: user.nickname,
+                              }));
                               setNicknameQuery(user.nickname);
                               setShowNicknameSuggestions(false);
                             }}
@@ -1140,7 +1399,9 @@ ${memberLines}
                           >
                             <div className="font-medium">{user.nickname}</div>
                             {user.name && (
-                              <div className="mt-0.5 text-xs text-slate-400">{user.name}</div>
+                              <div className="mt-0.5 text-xs text-slate-400">
+                                {user.name}
+                              </div>
                             )}
                           </button>
                         ))}
@@ -1157,21 +1418,29 @@ ${memberLines}
                   </div>
 
                   <div>
-                    <label className="mb-2 block text-sm font-medium text-slate-700">날짜</label>
+                    <label className="mb-2 block text-sm font-medium text-slate-700">
+                      날짜
+                    </label>
                     <input
                       type="date"
                       value={form.date}
-                      onChange={(e) => setForm((prev) => ({ ...prev, date: e.target.value }))}
+                      onChange={(e) =>
+                        setForm((prev) => ({ ...prev, date: e.target.value }))
+                      }
                       className="w-full rounded-2xl border px-4 py-3 text-sm"
                     />
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="mb-2 block text-sm font-medium text-slate-700">시작시간</label>
+                      <label className="mb-2 block text-sm font-medium text-slate-700">
+                        시작시간
+                      </label>
                       <select
                         value={form.start}
-                        onChange={(e) => setForm((prev) => ({ ...prev, start: e.target.value }))}
+                        onChange={(e) =>
+                          setForm((prev) => ({ ...prev, start: e.target.value }))
+                        }
                         className="w-full rounded-2xl border px-3 py-3 text-sm"
                       >
                         {timeOptions.map((time) => (
@@ -1183,10 +1452,14 @@ ${memberLines}
                     </div>
 
                     <div>
-                      <label className="mb-2 block text-sm font-medium text-slate-700">종료시간</label>
+                      <label className="mb-2 block text-sm font-medium text-slate-700">
+                        종료시간
+                      </label>
                       <select
                         value={form.end}
-                        onChange={(e) => setForm((prev) => ({ ...prev, end: e.target.value }))}
+                        onChange={(e) =>
+                          setForm((prev) => ({ ...prev, end: e.target.value }))
+                        }
                         className="w-full rounded-2xl border px-3 py-3 text-sm"
                       >
                         {timeOptions.map((time) => (
@@ -1199,11 +1472,16 @@ ${memberLines}
                   </div>
 
                   <div>
-                    <label className="mb-2 block text-sm font-medium text-slate-700">희망탁</label>
+                    <label className="mb-2 block text-sm font-medium text-slate-700">
+                      희망탁
+                    </label>
                     <select
                       value={form.table}
                       onChange={(e) =>
-                        setForm((prev) => ({ ...prev, table: e.target.value as TableType }))
+                        setForm((prev) => ({
+                          ...prev,
+                          table: e.target.value as TableType,
+                        }))
                       }
                       className="w-full rounded-2xl border px-4 py-3 text-sm"
                     >
@@ -1213,10 +1491,14 @@ ${memberLines}
                   </div>
 
                   <div>
-                    <label className="mb-2 block text-sm font-medium text-slate-700">메모</label>
+                    <label className="mb-2 block text-sm font-medium text-slate-700">
+                      메모
+                    </label>
                     <textarea
                       value={form.memo}
-                      onChange={(e) => setForm((prev) => ({ ...prev, memo: e.target.value }))}
+                      onChange={(e) =>
+                        setForm((prev) => ({ ...prev, memo: e.target.value }))
+                      }
                       rows={3}
                       placeholder="예: 10분 정도 늦을 수 있음"
                       className="w-full rounded-2xl border px-4 py-3 text-sm"
@@ -1260,19 +1542,23 @@ ${memberLines}
               <div className="space-y-3">
                 {myEntries.length === 0 ? (
                   <div className="rounded-3xl border bg-slate-50 p-6 text-sm text-slate-500">
-                    선택한 회원의 일정이 없습니다.
+                    오늘 포함 미래 일정이 없습니다.
                   </div>
                 ) : (
                   myEntries.map((item) => (
                     <div key={item.id} className="rounded-3xl border bg-white p-4 shadow-sm">
                       <div className="flex flex-col gap-3">
                         <div>
-                          <div className="text-base font-semibold text-slate-800">{item.date}</div>
+                          <div className="text-base font-semibold text-slate-800">
+                            {item.date} ({getKoreanWeekday(item.date)})
+                          </div>
                           <div className="mt-1 text-sm text-slate-600">
                             {item.start} ~ {item.end} · {item.table}
                           </div>
                           {item.memo && (
-                            <div className="mt-2 text-sm text-slate-500">메모: {item.memo}</div>
+                            <div className="mt-2 text-sm text-slate-500">
+                              메모: {item.memo}
+                            </div>
                           )}
                         </div>
 
@@ -1301,6 +1587,86 @@ ${memberLines}
             </div>
           )}
         </main>
+
+        {selectedTimelineEntries.length > 0 && (
+          <div className="pointer-events-none fixed inset-0 z-50 flex items-start justify-center px-3 pt-4">
+            <div className="pointer-events-auto w-full max-w-md rounded-3xl border bg-white p-4 shadow-2xl">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-base font-semibold text-slate-800">
+                    선택 인원 {selectedTimelineEntries.length}
+                  </div>
+                  <div className="mt-1 text-sm text-slate-600">
+                    {selectedTimelineEntries.map((entry) => entry.nickname).join(", ")}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={clearSelectedTimelineEntries}
+                  className="rounded-xl bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600"
+                >
+                  닫기
+                </button>
+              </div>
+
+              {selectedTimelineEntries.length === 1 ? (
+                <div className="mt-4 space-y-2">
+                  <button
+                    type="button"
+                    onClick={copySinglePromoMessage}
+                    className="w-full rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white"
+                  >
+                    카톡 복사
+                  </button>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => editEntry(selectedTimelineEntries[0])}
+                      className="rounded-2xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white"
+                    >
+                      수정
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => deleteEntry(selectedTimelineEntries[0].id)}
+                      disabled={deletingId !== null}
+                      className="rounded-2xl bg-rose-500 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
+                    >
+                      {deletingId === selectedTimelineEntries[0].id ? "삭제중..." : "삭제"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-4">
+                  {selectedCommonInfo?.hasCommonTime ? (
+                    <>
+                      <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                        공통 가능 시간: {selectedCommonInfo.start} ~ {selectedCommonInfo.end}
+                      </div>
+
+                      <div className="mt-2 grid grid-cols-1 gap-2">
+                        <button
+                          type="button"
+                          onClick={copyCommonPromoMessage}
+                          className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white"
+                        >
+                          카톡 복사
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+                      선택한 일정들의 공통시간이 없습니다.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="fixed bottom-0 left-0 right-0 z-50 border-t bg-white">
